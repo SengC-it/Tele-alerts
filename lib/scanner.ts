@@ -2,7 +2,7 @@ import type { ScanResult, Signal, SignalRule, WatchItem, Layer, LayerConfig, Sig
 import { LAYER_CONFIGS, INFO_SIGNAL_IDS } from './types';
 import { getEnabledWatchlist, getEnabledRules, addSignal } from './supabase';
 import { fetchOHLCV, fetchFundingRate, fetchTicker, loadMarkets } from './exchange';
-import { calculateIndicators, isUpTrend, last } from './indicators';
+import { calculateIndicators, last } from './indicators';
 import {
   detectEMACross, detectMACDFlip, detectRSIExtreme, detectBBBreakout,
   detectBBReversion, detectVolumeSurge, detectPriceVolume,
