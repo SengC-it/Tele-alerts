@@ -175,6 +175,27 @@ export async function scanSymbolLayered(
     marketsLoaded = true;
   }
 
+  // Fetch symbol-level data once (funding rate + ticker) — shared across timeframes
+  const extraPromises: Promise<Signal | null>[] = [];
+  for (const rule of rules) {
+    if (rule.id === 'funding_rate') {
+      extraPromises.push(
+        fetchFundingRate(item.symbol)
+          .then((info) => tagReliability(detectFundingRateAnomaly(item.symbol, info, rule.params.threshold)))
+          .catch(() => null)
+      );
+    }
+    if (rule.id === 'price_change') {
+      extraPromises.push(
+        fetchTicker(item.symbol)
+          .then((ticker) => tagReliability(detectPriceChange(item.symbol, ticker, rule.params.changePercent)))
+          .catch(() => null)
+      );
+    }
+  }
+  // Start fetching early, results shared across all timeframes
+  const extraResultsPromise = Promise.all(extraPromises);
+
   // Scan all timeframes in parallel
   const results = await Promise.all(
     config.timeframes.map(async (tf) => {
@@ -184,14 +205,17 @@ export async function scanSymbolLayered(
       };
 
       try {
-        const candles = await fetchOHLCV(item.symbol, tf, config.candleCount);
+        const [candles, extraResults] = await Promise.all([
+          fetchOHLCV(item.symbol, tf, config.candleCount),
+          extraResultsPromise,
+        ]);
+
         if (candles.length < 50) {
           result.error = `K线不足(${candles.length})`;
           return result;
         }
 
         const indicators = calculateIndicators(candles);
-        const upTrend = isUpTrend(indicators);
         const closeNow = candles[candles.length - 1]?.close;
         const atrNow = last(indicators.atr);
         const candidateSignals: (Signal | null)[] = [];
@@ -221,25 +245,7 @@ export async function scanSymbolLayered(
           candidateSignals.push(signal);
         }
 
-        // Extra signals (funding, price change) — parallel fetch
-        const extraPromises: Promise<Signal | null>[] = [];
-        for (const rule of rules) {
-          if (rule.id === 'funding_rate') {
-            extraPromises.push(
-              fetchFundingRate(item.symbol)
-                .then((info) => tagReliability(detectFundingRateAnomaly(item.symbol, info, rule.params.threshold)))
-                .catch(() => null)
-            );
-          }
-          if (rule.id === 'price_change') {
-            extraPromises.push(
-              fetchTicker(item.symbol)
-                .then((ticker) => tagReliability(detectPriceChange(item.symbol, ticker, rule.params.changePercent)))
-                .catch(() => null)
-            );
-          }
-        }
-        const extraResults = await Promise.all(extraPromises);
+        // Add shared extra signals (funding, price_change) — fetched once per symbol
         candidateSignals.push(...extraResults);
 
         // Collect all valid signals
@@ -248,11 +254,11 @@ export async function scanSymbolLayered(
           s.layer = item.layer;
         }
 
-        // Resolve direction conflicts: strategy signals win, info signals demoted to context
+        // Resolve direction conflicts
         const resolvedSignals = resolveConflicts(rawSignals);
         result.signals = resolvedSignals;
 
-        // Store signals to DB (email sent in bulk by scanAll)
+        // Store signals to DB
         for (const signal of resolvedSignals) {
           const added = await addSignal(signal);
           if (added) {
