@@ -1,5 +1,5 @@
-import type { ScanResult, Signal, SignalRule, WatchItem, Layer, LayerConfig } from './types';
-import { LAYER_CONFIGS } from './types';
+import type { ScanResult, Signal, SignalRule, WatchItem, Layer, LayerConfig, SignalDirection } from './types';
+import { LAYER_CONFIGS, INFO_SIGNAL_IDS } from './types';
 import { getEnabledWatchlist, getEnabledRules, addSignal } from './supabase';
 import { fetchOHLCV, fetchFundingRate, fetchTicker, loadMarkets } from './exchange';
 import { calculateIndicators, isUpTrend } from './indicators';
@@ -18,6 +18,89 @@ function getLayerConfig(layer: Layer): LayerConfig {
   return LAYER_CONFIGS[layer] || LAYER_CONFIGS[1];
 }
 
+/** Tag each signal with reliability tier */
+function tagReliability(signal: Signal | null): Signal | null {
+  if (!signal) return null;
+  // Extract base rule id from signal id (e.g. "price_change_SOL/USDT:USDT_xxx" → "price_change")
+  const ruleId = signal.id.split('_').slice(0, 2).join('_');
+  // More precise check: strip symbol and timestamp suffix
+  const baseId = signal.id.replace(/_[A-Z/]+:USDT_\d+$/, '');
+  signal.reliability = INFO_SIGNAL_IDS.includes(baseId) ? 'info' : 'strategy';
+  return signal;
+}
+
+/**
+ * Resolve conflicting signals for the same symbol.
+ * When a strategy signal and an info signal have opposite directions,
+ * the strategy signal wins and the info signal is demoted to supporting context.
+ *
+ * Rules:
+ * 1. If no direction conflict → keep all signals as-is
+ * 2. If conflict: strategy signals always win over info signals
+ * 3. Info signals with opposite direction are demoted to `supportingSignals` on the strategy signal
+ * 4. If only info signals conflict (no strategy signal) → keep the strongest one, demote the rest
+ */
+function resolveConflicts(signals: Signal[]): Signal[] {
+  if (signals.length <= 1) return signals;
+
+  const strategySignals = signals.filter(s => s.reliability === 'strategy');
+  const infoSignals = signals.filter(s => s.reliability === 'info');
+
+  // No strategy signals at all — keep only the strongest info signal
+  if (strategySignals.length === 0) {
+    if (infoSignals.length <= 1) return infoSignals;
+    // Multiple info signals: keep the one with highest strength
+    const strongest = infoSignals.reduce((a, b) => a.strength >= b.strength ? a : b);
+    const others = infoSignals.filter(s => s.id !== strongest.id);
+    if (others.length > 0) {
+      strongest.supportingSignals = others.map(s => ({
+        name: s.name, direction: s.direction, message: s.message,
+      }));
+      // Adjust message to acknowledge context
+      const ctxDirs = [...new Set(others.map(s => s.direction))];
+      if (ctxDirs.includes(strongest.direction === 'long' ? 'short' : 'long')) {
+        strongest.message += ` (参考: ${others.map(s => s.message).join('; ')})`;
+      }
+    }
+    return [strongest];
+  }
+
+  // Check if any strategy signal conflicts with any info signal
+  const strategyDirs = new Set(strategySignals.map(s => s.direction));
+  const conflictingInfo = infoSignals.filter(s => !strategyDirs.has(s.direction));
+  const alignedInfo = infoSignals.filter(s => strategyDirs.has(s.direction));
+
+  if (conflictingInfo.length === 0) {
+    // No conflicts — return all
+    return [...strategySignals, ...alignedInfo];
+  }
+
+  // Conflicts exist: demote conflicting info signals to supporting context on strategy signals
+  const result: Signal[] = [...strategySignals];
+
+  // Attach conflicting info as supporting context to the first strategy signal
+  if (strategySignals.length > 0) {
+    const primary = strategySignals[0];
+    primary.supportingSignals = [
+      ...(primary.supportingSignals || []),
+      ...conflictingInfo.map(s => ({
+        name: s.name, direction: s.direction, message: s.message,
+      })),
+    ];
+    // Enrich the message with context
+    const conflictMsg = conflictingInfo.map(s => {
+      const dir = s.direction === 'long' ? '偏多' : '偏空';
+      return `${s.name}(${dir})`;
+    }).join(', ');
+    primary.message += ` [背景: ${conflictMsg} — 策略信号优先]`;
+  }
+
+  // Keep aligned info signals (they reinforce the strategy direction)
+  result.push(...alignedInfo);
+
+  return result;
+}
+
 /** Run a single detector by rule ID, returning signal or null */
 function runDetector(
   ruleId: string, symbol: string, timeframe: string,
@@ -26,27 +109,29 @@ function runDetector(
   const rule = rules.find((r) => r.id === ruleId);
   if (!rule) return null;
 
+  let signal: Signal | null = null;
+
   switch (ruleId) {
     case 'ema_cross':
-      return detectEMACross(symbol, timeframe, indicators);
+      signal = detectEMACross(symbol, timeframe, indicators); break;
     case 'macd_flip':
-      return detectMACDFlip(symbol, timeframe, indicators);
+      signal = detectMACDFlip(symbol, timeframe, indicators); break;
     case 'rsi_extreme':
-      return detectRSIExtreme(symbol, timeframe, indicators, rule.params.overbought, rule.params.oversold);
+      signal = detectRSIExtreme(symbol, timeframe, indicators, rule.params.overbought, rule.params.oversold); break;
     case 'bb_breakout':
-      return detectBBBreakout(symbol, timeframe, candles, indicators);
+      signal = detectBBBreakout(symbol, timeframe, candles, indicators); break;
     case 'bb_reversion':
-      return detectBBReversion(symbol, timeframe, candles, indicators);
+      signal = detectBBReversion(symbol, timeframe, candles, indicators); break;
     case 'volume_surge':
-      return detectVolumeSurge(symbol, timeframe, candles);
+      signal = detectVolumeSurge(symbol, timeframe, candles); break;
     case 'price_volume':
-      return detectPriceVolume(symbol, timeframe, candles);
+      signal = detectPriceVolume(symbol, timeframe, candles); break;
     case 'new_high_low':
     case 'price_new_high_low':
-      return detectNewHighLow(symbol, timeframe, candles, rule.params.lookback || 24);
-    default:
-      return null;
+      signal = detectNewHighLow(symbol, timeframe, candles, rule.params.lookback || 24); break;
   }
+
+  return tagReliability(signal);
 }
 
 /** Scan one symbol on one timeframe with layer-specific logic */
@@ -107,14 +192,14 @@ export async function scanSymbolLayered(
         if (rule.id === 'funding_rate') {
           extraPromises.push(
             fetchFundingRate(item.symbol)
-              .then((info) => detectFundingRateAnomaly(item.symbol, info, rule.params.threshold))
+              .then((info) => tagReliability(detectFundingRateAnomaly(item.symbol, info, rule.params.threshold)))
               .catch(() => null)
           );
         }
         if (rule.id === 'price_change') {
           extraPromises.push(
             fetchTicker(item.symbol)
-              .then((ticker) => detectPriceChange(item.symbol, ticker, rule.params.changePercent))
+              .then((ticker) => tagReliability(detectPriceChange(item.symbol, ticker, rule.params.changePercent)))
               .catch(() => null)
           );
         }
@@ -122,12 +207,15 @@ export async function scanSymbolLayered(
       const extraResults = await Promise.all(extraPromises);
       candidateSignals.push(...extraResults);
 
-      // Collect valid signals and save
-      const validSignals = candidateSignals.filter((s): s is Signal => s !== null);
-      for (const s of validSignals) {
+      // Collect all valid signals
+      const rawSignals = candidateSignals.filter((s): s is Signal => s !== null);
+      for (const s of rawSignals) {
         s.layer = item.layer;
       }
-      result.signals = validSignals;
+
+      // Resolve direction conflicts: strategy signals win, info signals demoted to context
+      const resolvedSignals = resolveConflicts(rawSignals);
+      result.signals = resolvedSignals;
 
       // Store + notify
       for (const signal of validSignals) {

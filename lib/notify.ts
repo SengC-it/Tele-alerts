@@ -55,6 +55,12 @@ export async function sendSignalEmail(signal: Signal): Promise<boolean> {
       <div><div style="color:#a8a8b3;font-size:12px">类型</div>
         <div style="font-size:18px">${signal.type === 'technical' ? '技术面' : signal.type === 'funding' ? '资金面' : '价格面'}</div></div>
     </div>
+    ${signal.reliability === 'info' ? '<div style="background:rgba(255,193,7,0.15);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:13px;color:#ffc107">⚠ 仅供参考：此信号为市场状态提示，非策略交易信号</div>' : ''}
+    ${signal.supportingSignals && signal.supportingSignals.length > 0 ? `
+    <div style="background:rgba(33,150,243,0.1);border-radius:6px;padding:10px 14px;margin-bottom:12px">
+      <div style="font-size:12px;color:#64b5f6;margin-bottom:6px">相关背景信号：</div>
+      ${signal.supportingSignals.map(s => `<div style="font-size:13px;color:#90caf9;margin-bottom:4px">${s.direction === 'long' ? '🟢' : '🔴'} ${s.name} (${s.direction === 'long' ? '偏多' : '偏空'}): ${s.message}</div>`).join('')}
+    </div>` : ''}
     <div style="color:#666;font-size:12px;border-top:1px solid rgba(255,255,255,0.1);padding-top:12px">
       ${new Date(signal.created_at || Date.now()).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}
     </div>

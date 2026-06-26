@@ -20,6 +20,16 @@ export interface SignalRule {
 
 export type SignalDirection = 'long' | 'short' | 'neutral';
 
+/**
+ * Signal reliability tier:
+ * - 'strategy': Backtest-validated core signals (bb_reversion, bb_breakout, etc.)
+ * - 'info': Market state indicators (price_change, funding_rate) — NOT standalone trade signals
+ */
+export type SignalReliability = 'strategy' | 'info';
+
+/** Rules that are "informational" only — they describe market state, not trade direction */
+export const INFO_SIGNAL_IDS = ['price_change', 'funding_rate'];
+
 export interface Signal {
   id: string;
   type: 'technical' | 'funding' | 'price';
@@ -32,6 +42,10 @@ export interface Signal {
   layer?: Layer;
   data: Record<string, any>;
   created_at?: string;
+  /** Whether this signal is backtest-validated strategy or informational context */
+  reliability?: SignalReliability;
+  /** When conflicting signals were merged, list the suppressed info signals */
+  supportingSignals?: { name: string; direction: SignalDirection; message: string }[];
 }
 
 export interface CandleData {

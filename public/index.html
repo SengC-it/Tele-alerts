@@ -169,16 +169,32 @@
     const tl = s.type==='technical'?'技术面':s.type==='funding'?'资金面':'价格面';
     const st = '★'.repeat(s.strength)+'☆'.repeat(5-s.strength);
     const tm = new Date(s.created_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'});
+    // Reliability badge
+    const relBadge = s.reliability === 'info'
+      ? '<span class="text-xs px-1.5 py-0.5 rounded bg-yellow-900/30 text-yellow-400">仅供参考</span>'
+      : s.reliability === 'strategy'
+      ? '<span class="text-xs px-1.5 py-0.5 rounded bg-green-900/30 text-green-400">策略信号</span>'
+      : '';
+    // Supporting signals (conflict context)
+    const supHTML = s.supportingSignals && s.supportingSignals.length > 0
+      ? '<div class="mt-1.5 p-2 rounded bg-blue-900/15 border border-blue-800/20">'
+        + '<div class="text-xs text-blue-300 mb-1">相关背景：</div>'
+        + s.supportingSignals.map(x =>
+            `<div class="text-xs text-blue-200/70">${x.direction==='long'?'🟢':'🔴'} ${x.name} (${x.direction==='long'?'偏多':'偏空'})</div>`
+          ).join('')
+        + '</div>'
+      : '';
     return `<div class="px-5 py-3 ${dc} ${lc} fade-in hover:bg-white/[0.02] transition-colors">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2"><span class="text-lg">${di}</span>
-          <div><div class="flex items-center gap-2"><span class="text-sm font-medium text-white">${s.name}</span>${layerBadge(l)}</div>
+          <div><div class="flex items-center gap-2"><span class="text-sm font-medium text-white">${s.name}</span>${layerBadge(l)}${relBadge}</div>
             <div class="text-xs text-gray-500">${s.symbol} · ${s.timeframe} · ${tl}</div></div></div>
         <div class="text-right">
           <div class="text-sm font-medium ${s.direction==='long'?'text-green-400':s.direction==='short'?'text-red-400':'text-yellow-400'}">${dl}</div>
           <div class="text-xs text-yellow-500">${st}</div></div>
       </div>
       <div class="mt-1 text-xs text-gray-400">${s.message}</div>
+      ${supHTML}
       <div class="mt-1 text-xs text-gray-600">${tm}</div></div>`;
   }
 

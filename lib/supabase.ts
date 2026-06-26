@@ -107,12 +107,17 @@ export async function addSignal(signal: Signal): Promise<boolean> {
     if (elapsed < cooldownMs) return false; // 冷却中
   }
 
-  // Write signal with layer
-  const { error: insertErr } = await sb.from(TABLE.signals).insert({
+  // Build DB row: map camelCase fields to snake_case, remove JS-only fields
+  const row: Record<string, any> = {
     ...signal,
     layer: signal.layer || null,
+    supporting_signals: signal.supportingSignals || null,
     created_at: new Date().toISOString(),
-  });
+  };
+  // Remove camelCase fields that don't match DB columns
+  delete row.supportingSignals;
+
+  const { error: insertErr } = await sb.from(TABLE.signals).insert(row);
   if (insertErr) throw insertErr;
 
   // 更新冷却
@@ -144,7 +149,14 @@ export async function getSignals(opts?: {
 
   const { data, error } = await query;
   if (error) throw error;
-  return data || [];
+  // Map snake_case DB columns back to camelCase JS fields
+  return (data || []).map((row: any) => {
+    if (row.supporting_signals) {
+      row.supportingSignals = row.supporting_signals;
+      delete row.supporting_signals;
+    }
+    return row;
+  });
 }
 
 export async function getSignalStats(): Promise<{
