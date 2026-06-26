@@ -1,9 +1,9 @@
 name: Crypto Signal Scanner
 
 on:
-  # 定时执行：每小时一次（适配4h/1h分层策略）
+  # 定时执行：每30分钟一次（适配 4h/1h/15m 分层策略）
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0,30 * * * *'
   # 允许手动触发
   workflow_dispatch:
 

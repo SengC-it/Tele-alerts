@@ -120,36 +120,36 @@ export interface LayerConfig {
   candleCount: number;        // how many candles to fetch
 }
 
-/** Default layer configs — matches backtest findings */
+/** Default layer configs — matches backtest findings (v2: expanded from 30-coin backtest) */
 export const LAYER_CONFIGS: Record<Layer, LayerConfig> = {
   1: {
     layer: 1, label: '蓝筹主流',
     timeframes: ['4h'],
-    signals: ['bb_breakout', 'macd_flip'],
+    signals: ['bb_breakout', 'rsi_extreme'],
     trendFilter: true,
     autoDirection: false,
     candleCount: 300,
   },
   2: {
-    layer: 2, label: '中市值混合',
-    timeframes: ['4h', '1h'],
-    signals: ['bb_breakout', 'bb_reversion', 'macd_flip', 'new_high_low'],
+    layer: 2, label: '中盘突破',
+    timeframes: ['4h'],
+    signals: ['bb_breakout', 'rsi_extreme'],
     trendFilter: true,
-    autoDirection: true,
+    autoDirection: false,
     candleCount: 300,
   },
   3: {
-    layer: 3, label: '高波动反转',
+    layer: 3, label: '高波动策略',
     timeframes: ['1h'],
-    signals: ['bb_reversion', 'rsi_extreme', 'volume_surge'],
+    signals: ['bb_reversion', 'rsi_extreme'],
     trendFilter: true,
     autoDirection: false,
     candleCount: 300,
   },
   4: {
-    layer: 4, label: '动态热门',
+    layer: 4, label: '弹性新币',
     timeframes: ['4h', '1h'],
-    signals: ['bb_breakout', 'bb_reversion', 'volume_surge', 'price_volume'],
+    signals: ['bb_breakout', 'bb_reversion', 'rsi_extreme'],
     trendFilter: true,
     autoDirection: true,
     candleCount: 300,

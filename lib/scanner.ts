@@ -163,12 +163,11 @@ function runDetector(
   return tagReliability(signal);
 }
 
-/** Scan one symbol on one timeframe with layer-specific logic */
+/** Scan one symbol across its layer's timeframes (parallel within symbol) */
 export async function scanSymbolLayered(
   item: WatchItem, rules: SignalRule[]
 ): Promise<ScanResult[]> {
   const config = getLayerConfig(item.layer);
-  const results: ScanResult[] = [];
 
   // Load markets once
   if (!marketsLoaded) {
@@ -176,102 +175,104 @@ export async function scanSymbolLayered(
     marketsLoaded = true;
   }
 
-  for (const tf of config.timeframes) {
-    const result: ScanResult = {
-      symbol: item.symbol, timeframe: tf, layer: item.layer,
-      timestamp: Date.now(), signals: [],
-    };
+  // Scan all timeframes in parallel
+  const results = await Promise.all(
+    config.timeframes.map(async (tf) => {
+      const result: ScanResult = {
+        symbol: item.symbol, timeframe: tf, layer: item.layer,
+        timestamp: Date.now(), signals: [],
+      };
 
-    try {
-      const candles = await fetchOHLCV(item.symbol, tf, config.candleCount);
-      if (candles.length < 50) {
-        result.error = `K线不足(${candles.length})`;
-        results.push(result);
-        continue;
+      try {
+        const candles = await fetchOHLCV(item.symbol, tf, config.candleCount);
+        if (candles.length < 50) {
+          result.error = `K线不足(${candles.length})`;
+          return result;
+        }
+
+        const indicators = calculateIndicators(candles);
+        const upTrend = isUpTrend(indicators);
+        const closeNow = candles[candles.length - 1]?.close;
+        const atrNow = last(indicators.atr);
+        const candidateSignals: (Signal | null)[] = [];
+
+        for (const sigId of config.signals) {
+          let signal: Signal | null = null;
+
+          if (sigId === 'bb_breakout' && config.autoDirection) {
+            signal = detectBBWithAutoDirection(item.symbol, tf, candles, indicators);
+            signal = tagReliability(signal);
+          } else if (sigId === 'bb_reversion' && config.autoDirection) {
+            continue;
+          } else {
+            signal = runDetector(sigId, item.symbol, tf, candles, indicators, rules);
+          }
+
+          // Apply trend filter if configured
+          if (signal && config.trendFilter) {
+            signal = applyTrendFilter(signal, indicators);
+          }
+
+          // Calculate entry/SL/TP for strategy signals using ATR
+          if (signal && closeNow) {
+            signal = calculateLevels(signal, closeNow, atrNow);
+          }
+
+          candidateSignals.push(signal);
+        }
+
+        // Extra signals (funding, price change) — parallel fetch
+        const extraPromises: Promise<Signal | null>[] = [];
+        for (const rule of rules) {
+          if (rule.id === 'funding_rate') {
+            extraPromises.push(
+              fetchFundingRate(item.symbol)
+                .then((info) => tagReliability(detectFundingRateAnomaly(item.symbol, info, rule.params.threshold)))
+                .catch(() => null)
+            );
+          }
+          if (rule.id === 'price_change') {
+            extraPromises.push(
+              fetchTicker(item.symbol)
+                .then((ticker) => tagReliability(detectPriceChange(item.symbol, ticker, rule.params.changePercent)))
+                .catch(() => null)
+            );
+          }
+        }
+        const extraResults = await Promise.all(extraPromises);
+        candidateSignals.push(...extraResults);
+
+        // Collect all valid signals
+        const rawSignals = candidateSignals.filter((s): s is Signal => s !== null);
+        for (const s of rawSignals) {
+          s.layer = item.layer;
+        }
+
+        // Resolve direction conflicts: strategy signals win, info signals demoted to context
+        const resolvedSignals = resolveConflicts(rawSignals);
+        result.signals = resolvedSignals;
+
+        // Store signals to DB (email sent in bulk by scanAll)
+        for (const signal of resolvedSignals) {
+          const added = await addSignal(signal);
+          if (added) {
+            const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
+            console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}`);
+          }
+        }
+      } catch (err: any) {
+        result.error = err.message;
+        console.error(`[Scan] ${item.symbol} ${tf} L${item.layer} 失败:`, err.message);
       }
 
-      const indicators = calculateIndicators(candles);
-      const upTrend = isUpTrend(indicators);
-      const closeNow = candles[candles.length - 1]?.close;
-      const atrNow = last(indicators.atr);
-      const candidateSignals: (Signal | null)[] = [];
-
-      for (const sigId of config.signals) {
-        let signal: Signal | null = null;
-
-        if (sigId === 'bb_breakout' && config.autoDirection) {
-          signal = detectBBWithAutoDirection(item.symbol, tf, candles, indicators);
-          signal = tagReliability(signal);
-        } else if (sigId === 'bb_reversion' && config.autoDirection) {
-          continue;
-        } else {
-          signal = runDetector(sigId, item.symbol, tf, candles, indicators, rules);
-        }
-
-        // Apply trend filter if configured
-        if (signal && config.trendFilter) {
-          signal = applyTrendFilter(signal, indicators);
-        }
-
-        // Calculate entry/SL/TP for strategy signals using ATR
-        if (signal && closeNow) {
-          signal = calculateLevels(signal, closeNow, atrNow);
-        }
-
-        candidateSignals.push(signal);
-      }
-
-      // Extra signals (funding, price change) — parallel fetch
-      const extraPromises: Promise<Signal | null>[] = [];
-      for (const rule of rules) {
-        if (rule.id === 'funding_rate') {
-          extraPromises.push(
-            fetchFundingRate(item.symbol)
-              .then((info) => tagReliability(detectFundingRateAnomaly(item.symbol, info, rule.params.threshold)))
-              .catch(() => null)
-          );
-        }
-        if (rule.id === 'price_change') {
-          extraPromises.push(
-            fetchTicker(item.symbol)
-              .then((ticker) => tagReliability(detectPriceChange(item.symbol, ticker, rule.params.changePercent)))
-              .catch(() => null)
-          );
-        }
-      }
-      const extraResults = await Promise.all(extraPromises);
-      candidateSignals.push(...extraResults);
-
-      // Collect all valid signals
-      const rawSignals = candidateSignals.filter((s): s is Signal => s !== null);
-      for (const s of rawSignals) {
-        s.layer = item.layer;
-      }
-
-      // Resolve direction conflicts: strategy signals win, info signals demoted to context
-      const resolvedSignals = resolveConflicts(rawSignals);
-      result.signals = resolvedSignals;
-
-      // Store signals to DB (email sent in bulk by scanAll)
-      for (const signal of resolvedSignals) {
-        const added = await addSignal(signal);
-        if (added) {
-          const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
-          console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}`);
-        }
-      }
-    } catch (err: any) {
-      result.error = err.message;
-      console.error(`[Scan] ${item.symbol} ${tf} L${item.layer} 失败:`, err.message);
-    }
-
-    results.push(result);
-  }
+      return result;
+    })
+  );
 
   return results;
 }
 
-/** Scan all enabled watchlist items with layer-aware logic */
+/** Scan all enabled watchlist items with layer-aware logic and parallel execution */
 export async function scanAll(): Promise<ScanResult[]> {
   const items = await getEnabledWatchlist();
   const rules = await getEnabledRules();
@@ -294,21 +295,26 @@ export async function scanAll(): Promise<ScanResult[]> {
   console.log(`[Scan] 开始扫描 ${items.length} 个标的 (${layerSummary})...`);
   const startTime = Date.now();
 
-  // Scan each item (sequential to avoid API rate limits)
+  // Parallel scan with controlled concurrency (5 at a time to stay within Binance rate limits)
   const allResults: ScanResult[] = [];
-  const newSignals: Signal[] = []; // Collect signals that passed cooldown (new only)
+  const CONCURRENCY = 5;
 
-  for (const item of items) {
-    const results = await scanSymbolLayered(item, rules);
-    allResults.push(...results);
-  }
-
-  // Collect signals that were actually stored (new, not in cooldown)
-  for (const r of allResults) {
-    for (const s of r.signals) {
-      // Signals with created_at were stored (addSignal returned true)
-      // We need to track this — let's collect from scan results instead
-    }
+  for (let i = 0; i < items.length; i += CONCURRENCY) {
+    const batch = items.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(item => scanSymbolLayered(item, rules).catch((err) => {
+        console.error(`[Scan] ${item.symbol} L${item.layer} 失败:`, err.message);
+        return [{
+          symbol: item.symbol,
+          timeframe: LAYER_CONFIGS[item.layer]?.timeframes[0] || '1h',
+          layer: item.layer,
+          timestamp: Date.now(),
+          signals: [],
+          error: err.message,
+        }] as ScanResult[];
+      }))
+    );
+    allResults.push(...batchResults.flat());
   }
 
   const sigCount = allResults.reduce((s, r) => s + r.signals.length, 0);

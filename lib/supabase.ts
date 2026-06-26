@@ -88,11 +88,12 @@ export async function updateSignalRules(rules: SignalRule[]): Promise<void> {
 export async function addSignal(signal: Signal): Promise<boolean> {
   const sb = getSupabase();
   const cooldownKey = `${signal.symbol}_${signal.type}_${signal.name}`;
-  // Cooldown based on timeframe: 4h signals = 4h cooldown, 1h = 2h, others = 15min
+  // Cooldown based on timeframe: 4h signals = 4h cooldown, 1h = 2h, 15m = 30min, others = 15min
   const tf = signal.timeframe || '-';
   let cooldownMs: number;
   if (tf === '4h') cooldownMs = 4 * 60 * 60 * 1000;
   else if (tf === '1h') cooldownMs = 2 * 60 * 60 * 1000;
+  else if (tf === '15m') cooldownMs = 30 * 60 * 1000;
   else cooldownMs = 15 * 60 * 1000;
 
   // 检查冷却
