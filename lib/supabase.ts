@@ -112,6 +112,7 @@ export async function addSignal(signal: Signal): Promise<boolean> {
     ...signal,
     layer: signal.layer || null,
     supporting_signals: signal.supportingSignals || null,
+    // levels stays as-is (same name in DB)
     created_at: new Date().toISOString(),
   };
   // Remove camelCase fields that don't match DB columns

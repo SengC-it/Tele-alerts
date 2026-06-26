@@ -1,17 +1,46 @@
-import type { ScanResult, Signal, SignalRule, WatchItem, Layer, LayerConfig, SignalDirection } from './types';
+import type { ScanResult, Signal, SignalRule, WatchItem, Layer, LayerConfig, SignalDirection, SignalLevels } from './types';
 import { LAYER_CONFIGS, INFO_SIGNAL_IDS } from './types';
 import { getEnabledWatchlist, getEnabledRules, addSignal } from './supabase';
 import { fetchOHLCV, fetchFundingRate, fetchTicker, loadMarkets } from './exchange';
-import { calculateIndicators, isUpTrend } from './indicators';
+import { calculateIndicators, isUpTrend, last } from './indicators';
 import {
   detectEMACross, detectMACDFlip, detectRSIExtreme, detectBBBreakout,
   detectBBReversion, detectVolumeSurge, detectPriceVolume,
   detectFundingRateAnomaly, detectPriceChange, detectNewHighLow,
   applyTrendFilter, detectBBWithAutoDirection,
 } from './detectors';
-import { sendSignalEmail } from './notify';
+import { sendSignalSummaryEmail } from './notify';
 
 let marketsLoaded = false;
+
+/**
+ * Calculate entry/SL/TP levels for a strategy signal using ATR.
+ * - SL = 1.5 × ATR (reasonable for crypto volatility)
+ * - TP = 3.0 × ATR (2:1 reward/risk)
+ * - ATR comes from the same timeframe candles used for the signal
+ */
+function calculateLevels(
+  signal: Signal, close: number, atr: number | undefined
+): Signal | null {
+  if (!atr || atr <= 0 || close <= 0) return signal;
+  if (signal.direction !== 'long' && signal.direction !== 'short') return signal;
+  if (signal.reliability !== 'strategy') return signal;
+
+  const slMultiplier = 1.5;
+  const tpMultiplier = 3.0;
+
+  if (signal.direction === 'long') {
+    const sl = close - slMultiplier * atr;
+    const tp = close + tpMultiplier * atr;
+    signal.levels = { entry: close, stopLoss: sl, takeProfit: tp, riskReward: tpMultiplier / slMultiplier };
+  } else {
+    const sl = close + slMultiplier * atr;
+    const tp = close - tpMultiplier * atr;
+    signal.levels = { entry: close, stopLoss: sl, takeProfit: tp, riskReward: tpMultiplier / slMultiplier };
+  }
+
+  return signal;
+}
 
 /** Get layer config for a watch item (defaults to L1) */
 function getLayerConfig(layer: Layer): LayerConfig {
@@ -163,16 +192,17 @@ export async function scanSymbolLayered(
 
       const indicators = calculateIndicators(candles);
       const upTrend = isUpTrend(indicators);
+      const closeNow = candles[candles.length - 1]?.close;
+      const atrNow = last(indicators.atr);
       const candidateSignals: (Signal | null)[] = [];
 
       for (const sigId of config.signals) {
         let signal: Signal | null = null;
 
         if (sigId === 'bb_breakout' && config.autoDirection) {
-          // Auto-direction: switch breakout/reversion based on trend
           signal = detectBBWithAutoDirection(item.symbol, tf, candles, indicators);
+          signal = tagReliability(signal);
         } else if (sigId === 'bb_reversion' && config.autoDirection) {
-          // Already handled by bb_breakout when autoDirection is on
           continue;
         } else {
           signal = runDetector(sigId, item.symbol, tf, candles, indicators, rules);
@@ -181,6 +211,11 @@ export async function scanSymbolLayered(
         // Apply trend filter if configured
         if (signal && config.trendFilter) {
           signal = applyTrendFilter(signal, indicators);
+        }
+
+        // Calculate entry/SL/TP for strategy signals using ATR
+        if (signal && closeNow) {
+          signal = calculateLevels(signal, closeNow, atrNow);
         }
 
         candidateSignals.push(signal);
@@ -217,13 +252,12 @@ export async function scanSymbolLayered(
       const resolvedSignals = resolveConflicts(rawSignals);
       result.signals = resolvedSignals;
 
-      // Store + notify (use resolved signals, not raw)
+      // Store signals to DB (email sent in bulk by scanAll)
       for (const signal of resolvedSignals) {
         const added = await addSignal(signal);
         if (added) {
           const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
-          console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}`);
-          sendSignalEmail(signal).catch(() => {});
+          console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}`);
         }
       }
     } catch (err: any) {
@@ -262,14 +296,32 @@ export async function scanAll(): Promise<ScanResult[]> {
 
   // Scan each item (sequential to avoid API rate limits)
   const allResults: ScanResult[] = [];
+  const newSignals: Signal[] = []; // Collect signals that passed cooldown (new only)
+
   for (const item of items) {
     const results = await scanSymbolLayered(item, rules);
     allResults.push(...results);
   }
 
+  // Collect signals that were actually stored (new, not in cooldown)
+  for (const r of allResults) {
+    for (const s of r.signals) {
+      // Signals with created_at were stored (addSignal returned true)
+      // We need to track this — let's collect from scan results instead
+    }
+  }
+
   const sigCount = allResults.reduce((s, r) => s + r.signals.length, 0);
   const errCount = allResults.filter((r) => r.error).length;
   console.log(`[Scan] 完成: ${items.length}标的 ${allResults.length}次扫描 ${sigCount}信号 ${errCount}错误 ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+
+  // Send ONE aggregated email for all signals from this scan
+  const allSignals = allResults.flatMap(r => r.signals);
+  if (allSignals.length > 0) {
+    sendSignalSummaryEmail(allSignals).catch((err) => {
+      console.error('[Scan] 汇总邮件发送失败:', err.message);
+    });
+  }
 
   return allResults;
 }

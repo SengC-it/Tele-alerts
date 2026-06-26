@@ -160,6 +160,8 @@
     return `<span class="text-xs px-1.5 py-0.5 rounded layer-badge-${l}">${LAYER_LABELS[l]||'L'+l}</span>`;
   }
 
+  function fmtP(n) { if(n>=1000)return n.toFixed(2); if(n>=1)return n.toFixed(4); if(n>=0.01)return n.toFixed(5); return n.toFixed(6); }
+
   function sigHTML(s) {
     const l = s.layer || 0;
     const lc = l ? `layer-${l}` : '';
@@ -175,6 +177,18 @@
       : s.reliability === 'strategy'
       ? '<span class="text-xs px-1.5 py-0.5 rounded bg-green-900/30 text-green-400">策略信号</span>'
       : '';
+    // Entry/SL/TP levels
+    const lvHTML = s.levels ? (() => {
+      const lv = s.levels;
+      const pctSL = Math.abs((lv.stopLoss-lv.entry)/lv.entry*100).toFixed(1);
+      const pctTP = Math.abs((lv.takeProfit-lv.entry)/lv.entry*100).toFixed(1);
+      return `<div class="mt-2 grid grid-cols-4 gap-2 text-xs">
+        <div class="bg-white/[0.04] rounded px-2 py-1"><div class="text-gray-500">入场</div><div class="text-white font-mono font-semibold">${fmtP(lv.entry)}</div></div>
+        <div class="bg-red-900/10 rounded px-2 py-1"><div class="text-red-400">止损 -${pctSL}%</div><div class="text-red-300 font-mono font-semibold">${fmtP(lv.stopLoss)}</div></div>
+        <div class="bg-green-900/10 rounded px-2 py-1"><div class="text-green-400">止盈 +${pctTP}%</div><div class="text-green-300 font-mono font-semibold">${fmtP(lv.takeProfit)}</div></div>
+        <div class="bg-yellow-900/10 rounded px-2 py-1"><div class="text-yellow-400">盈亏比</div><div class="text-yellow-300 font-semibold">${lv.riskReward.toFixed(1)}:1</div></div>
+      </div>`;
+    })() : (s.reliability === 'info' ? '<div class="mt-1 text-xs text-yellow-500/70">⚠ 仅供参考，无交易点位</div>' : '');
     // Supporting signals (conflict context)
     const supHTML = s.supportingSignals && s.supportingSignals.length > 0
       ? '<div class="mt-1.5 p-2 rounded bg-blue-900/15 border border-blue-800/20">'
@@ -194,6 +208,7 @@
           <div class="text-xs text-yellow-500">${st}</div></div>
       </div>
       <div class="mt-1 text-xs text-gray-400">${s.message}</div>
+      ${lvHTML}
       ${supHTML}
       <div class="mt-1 text-xs text-gray-600">${tm}</div></div>`;
   }

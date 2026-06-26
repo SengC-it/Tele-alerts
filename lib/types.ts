@@ -30,6 +30,15 @@ export type SignalReliability = 'strategy' | 'info';
 /** Rules that are "informational" only — they describe market state, not trade direction */
 export const INFO_SIGNAL_IDS = ['price_change', 'funding_rate'];
 
+/** Strategy signal entry/TP/SL levels derived from ATR */
+export interface SignalLevels {
+  entry: number;
+  stopLoss: number;
+  takeProfit: number;
+  /** Risk/Reward ratio (TP distance / SL distance) */
+  riskReward: number;
+}
+
 export interface Signal {
   id: string;
   type: 'technical' | 'funding' | 'price';
@@ -46,6 +55,8 @@ export interface Signal {
   reliability?: SignalReliability;
   /** When conflicting signals were merged, list the suppressed info signals */
   supportingSignals?: { name: string; direction: SignalDirection; message: string }[];
+  /** Entry / Stop Loss / Take Profit levels (strategy signals only) */
+  levels?: SignalLevels;
 }
 
 export interface CandleData {
