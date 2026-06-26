@@ -13,10 +13,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const type = req.query.type as string | undefined;
     const symbol = req.query.symbol as string | undefined;
+    const layer = req.query.layer ? parseInt(req.query.layer as string, 10) : undefined;
     const since = req.query.since ? parseInt(req.query.since as string, 10) : undefined;
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
 
-    const signals = await getSignals({ type, symbol, since, limit });
+    const signals = await getSignals({ type, symbol, layer, since, limit });
     return res.status(200).json(signals);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

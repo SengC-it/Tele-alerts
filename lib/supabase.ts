@@ -47,7 +47,7 @@ export async function upsertWatchlist(items: WatchItem[]): Promise<void> {
   await sb.from(TABLE.watchlist).delete().neq('id', 0);
   if (items.length > 0) {
     const { error } = await sb.from(TABLE.watchlist).insert(
-      items.map(({ symbol, timeframe, enabled }) => ({ symbol, timeframe, enabled }))
+      items.map(({ symbol, timeframe, layer, enabled }) => ({ symbol, timeframe, layer: layer || 1, enabled }))
     );
     if (error) throw error;
   }
@@ -88,7 +88,12 @@ export async function updateSignalRules(rules: SignalRule[]): Promise<void> {
 export async function addSignal(signal: Signal): Promise<boolean> {
   const sb = getSupabase();
   const cooldownKey = `${signal.symbol}_${signal.type}_${signal.name}`;
-  const cooldownMs = 15 * 60 * 1000; // 15 分钟冷却
+  // Cooldown based on timeframe: 4h signals = 4h cooldown, 1h = 2h, others = 15min
+  const tf = signal.timeframe || '-';
+  let cooldownMs: number;
+  if (tf === '4h') cooldownMs = 4 * 60 * 60 * 1000;
+  else if (tf === '1h') cooldownMs = 2 * 60 * 60 * 1000;
+  else cooldownMs = 15 * 60 * 1000;
 
   // 检查冷却
   const { data: cooldown } = await sb
@@ -102,9 +107,10 @@ export async function addSignal(signal: Signal): Promise<boolean> {
     if (elapsed < cooldownMs) return false; // 冷却中
   }
 
-  // 写入信号
+  // Write signal with layer
   const { error: insertErr } = await sb.from(TABLE.signals).insert({
     ...signal,
+    layer: signal.layer || null,
     created_at: new Date().toISOString(),
   });
   if (insertErr) throw insertErr;
@@ -120,6 +126,7 @@ export async function addSignal(signal: Signal): Promise<boolean> {
 export async function getSignals(opts?: {
   type?: string;
   symbol?: string;
+  layer?: number;
   since?: number;
   limit?: number;
 }): Promise<Signal[]> {
@@ -130,6 +137,7 @@ export async function getSignals(opts?: {
 
   if (opts?.type) query = query.eq('type', opts.type);
   if (opts?.symbol) query = query.eq('symbol', opts.symbol);
+  if (opts?.layer) query = query.eq('layer', opts.layer);
   if (opts?.since) query = query.gte('created_at', new Date(opts.since).toISOString());
   if (opts?.limit) query = query.limit(opts.limit);
   else query = query.limit(100);

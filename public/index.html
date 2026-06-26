@@ -24,6 +24,10 @@
     .live-dot{width:8px;height:8px;border-radius:50%;background:#00c853;animation:blink 2s ease-in-out infinite}
     @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
     .fade-in{animation:fadeIn .3s ease-in}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+    .layer-1{border-left:3px solid #42a5f5} .layer-2{border-left:3px solid #ab47bc}
+    .layer-3{border-left:3px solid #ff7043} .layer-4{border-left:3px solid #ffd54f}
+    .layer-badge-1{background:rgba(66,165,245,0.15);color:#42a5f5} .layer-badge-2{background:rgba(171,71,188,0.15);color:#ab47bc}
+    .layer-badge-3{background:rgba(255,112,67,0.15);color:#ff7043} .layer-badge-4{background:rgba(255,213,79,0.15);color:#ffd54f}
   </style>
 </head>
 <body class="text-gray-200 min-h-screen">
@@ -32,6 +36,7 @@
       <div class="flex items-center gap-3">
         <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-pink-600 flex items-center justify-center text-white font-bold text-sm">T</div>
         <h1 class="text-lg font-semibold text-white">Tele-Alerts</h1>
+        <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400">v2.0</span>
         <span id="liveBadge" class="hidden items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-green-900/30 text-green-400">
           <span class="live-dot"></span>LIVE
         </span>
@@ -50,6 +55,7 @@
   </div>
 
   <main class="max-w-7xl mx-auto px-4 py-6">
+    <!-- Dashboard with layer grouping -->
     <div id="tab-dashboard">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <div class="glass rounded-xl p-4"><div class="text-gray-500 text-xs mb-1">总信号</div><div id="s-total" class="text-2xl font-bold text-white">-</div></div>
@@ -57,10 +63,31 @@
         <div class="glass rounded-xl p-4"><div class="text-gray-500 text-xs mb-1">做多</div><div id="s-long" class="text-2xl font-bold text-green-400">-</div></div>
         <div class="glass rounded-xl p-4"><div class="text-gray-500 text-xs mb-1">做空</div><div id="s-short" class="text-2xl font-bold text-red-400">-</div></div>
       </div>
+
+      <!-- Layer summary cards -->
+      <div class="grid grid-cols-4 gap-3 mb-6">
+        <div class="glass rounded-lg p-3 layer-1">
+          <div class="flex items-center justify-between mb-1"><span class="text-xs font-medium text-blue-400">L1 蓝筹</span><span id="lc-1" class="text-xs text-gray-500">0</span></div>
+          <div id="ls-1" class="text-xs text-gray-600">BTC, ETH</div>
+        </div>
+        <div class="glass rounded-lg p-3 layer-2">
+          <div class="flex items-center justify-between mb-1"><span class="text-xs font-medium text-purple-400">L2 中市值</span><span id="lc-2" class="text-xs text-gray-500">0</span></div>
+          <div id="ls-2" class="text-xs text-gray-600">SOL, AVAX, LINK</div>
+        </div>
+        <div class="glass rounded-lg p-3 layer-3">
+          <div class="flex items-center justify-between mb-1"><span class="text-xs font-medium text-orange-400">L3 高波动</span><span id="lc-3" class="text-xs text-gray-500">0</span></div>
+          <div id="ls-3" class="text-xs text-gray-600">DOGE, WIF</div>
+        </div>
+        <div class="glass rounded-lg p-3 layer-4">
+          <div class="flex items-center justify-between mb-1"><span class="text-xs font-medium text-yellow-400">L4 热门</span><span id="lc-4" class="text-xs text-gray-500">0</span></div>
+          <div id="ls-4" class="text-xs text-gray-600">动态</div>
+        </div>
+      </div>
+
       <div class="glass rounded-xl">
         <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
           <h2 class="text-sm font-semibold text-white">最新信号</h2>
-          <span class="text-xs text-gray-600">由 GitHub Actions 每5分钟自动扫描</span>
+          <span class="text-xs text-gray-600">每小时自动扫描 (4h/1h分层策略)</span>
         </div>
         <div id="latest-signals" class="divide-y divide-white/5 max-h-[500px] overflow-y-auto">
           <div class="px-5 py-12 text-center text-gray-600 text-sm">等待信号...</div>
@@ -77,6 +104,10 @@
               <option value="">全部类型</option><option value="technical">技术面</option>
               <option value="funding">资金面</option><option value="price">价格面</option>
             </select>
+            <select id="f-layer" onchange="loadHistory()" class="text-xs rounded px-2 py-1">
+              <option value="">全部层级</option><option value="1">L1 蓝筹</option><option value="2">L2 中市值</option>
+              <option value="3">L3 高波动</option><option value="4">L4 热门</option>
+            </select>
             <select id="f-symbol" onchange="loadHistory()" class="text-xs rounded px-2 py-1">
               <option value="">全部标的</option>
             </select>
@@ -91,7 +122,7 @@
     <div id="tab-watchlist" class="hidden">
       <div class="glass rounded-xl">
         <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
-          <h2 class="text-sm font-semibold text-white">监控标的</h2>
+          <h2 class="text-sm font-semibold text-white">监控标的 (分层)</h2>
           <button onclick="addItem()" class="text-xs btn-primary px-3 py-1 rounded-lg text-white">+ 添加</button>
         </div>
         <div id="wl-items" class="divide-y divide-white/5"></div>
@@ -105,6 +136,9 @@
 
   <script>
   const $ = id => document.getElementById(id);
+  const LAYER_LABELS = {1:'L1 蓝筹',2:'L2 中市值',3:'L3 高波动',4:'L4 热门'};
+  const LAYER_COLORS = {1:'blue',2:'purple',3:'orange',4:'yellow'};
+
   async function api(path, opts = {}) {
     const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
     if (!r.ok) throw new Error(`API ${r.status}`);
@@ -115,22 +149,30 @@
     document.querySelectorAll('[data-tab]').forEach(e => {
       e.className = (e.dataset.tab === t ? 'tab-active' : 'tab-inactive') + ' pb-3 text-sm font-medium';
     });
-    ['dashboard','history','watchlist'].forEach(n => $(('tab-'+n)).classList.toggle('hidden', n !== t));
+    ['dashboard','history','watchlist'].forEach(n => $('tab-'+n).classList.toggle('hidden', n !== t));
     if (t === 'history') loadHistory();
     if (t === 'watchlist') loadWatchlist();
   }
 
+  function layerBadge(layer) {
+    const l = layer || 0;
+    if (!l) return '';
+    return `<span class="text-xs px-1.5 py-0.5 rounded layer-badge-${l}">${LAYER_LABELS[l]||'L'+l}</span>`;
+  }
+
   function sigHTML(s) {
+    const l = s.layer || 0;
+    const lc = l ? `layer-${l}` : '';
     const dc = s.direction==='long'?'signal-long':s.direction==='short'?'signal-short':'signal-neutral';
     const di = s.direction==='long'?'🟢':s.direction==='short'?'🔴':'⚪';
     const dl = s.direction==='long'?'做多':s.direction==='short'?'做空':'中性';
     const tl = s.type==='technical'?'技术面':s.type==='funding'?'资金面':'价格面';
     const st = '★'.repeat(s.strength)+'☆'.repeat(5-s.strength);
     const tm = new Date(s.created_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'});
-    return `<div class="px-5 py-3 ${dc} fade-in hover:bg-white/[0.02] transition-colors">
+    return `<div class="px-5 py-3 ${dc} ${lc} fade-in hover:bg-white/[0.02] transition-colors">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2"><span class="text-lg">${di}</span>
-          <div><div class="text-sm font-medium text-white">${s.name}</div>
+          <div><div class="flex items-center gap-2"><span class="text-sm font-medium text-white">${s.name}</span>${layerBadge(l)}</div>
             <div class="text-xs text-gray-500">${s.symbol} · ${s.timeframe} · ${tl}</div></div></div>
         <div class="text-right">
           <div class="text-sm font-medium ${s.direction==='long'?'text-green-400':s.direction==='short'?'text-red-400':'text-yellow-400'}">${dl}</div>
@@ -147,18 +189,23 @@
       $('s-24h').textContent = stats.last24h;
       $('s-long').textContent = stats.byDirection?.long || 0;
       $('s-short').textContent = stats.byDirection?.short || 0;
-      const sigs = await api('/api/signals?limit=20');
+      const sigs = await api('/api/signals?limit=30');
       const c = $('latest-signals');
       c.innerHTML = sigs.length ? sigs.map(sigHTML).join('') : '<div class="px-5 py-12 text-center text-gray-600 text-sm">暂无信号</div>';
       if (sigs.length) { $('liveBadge').classList.remove('hidden'); $('liveBadge').classList.add('flex'); }
+      // Layer counts
+      const lc = {1:0,2:0,3:0,4:0};
+      sigs.forEach(s => { if (s.layer && lc[s.layer] !== undefined) lc[s.layer]++; });
+      [1,2,3,4].forEach(l => $('lc-'+l).textContent = lc[l]+'信号');
     } catch(e) { console.error(e); }
   }
 
   async function loadHistory() {
     try {
-      const t = $('f-type').value, s = $('f-symbol').value;
+      const t = $('f-type').value, s = $('f-symbol').value, l = $('f-layer').value;
       let url = '/api/signals?limit=200';
       if (t) url += '&type='+t; if (s) url += '&symbol='+encodeURIComponent(s);
+      if (l) url += '&layer='+l;
       const sigs = await api(url);
       $('history-list').innerHTML = sigs.length ? sigs.map(sigHTML).join('') : '<div class="px-5 py-12 text-center text-gray-600 text-sm">暂无</div>';
     } catch(e) { console.error(e); }
@@ -167,13 +214,18 @@
   let wl = [], rl = [];
   async function loadWatchlist() {
     [wl, rl] = await Promise.all([api('/api/watchlist'), api('/api/rules')]);
+    const layerNames = {1:'L1 蓝筹',2:'L2 中市值',3:'L3 高波动',4:'L4 热门'};
     $('wl-items').innerHTML = wl.map((w,i) => `<div class="px-5 py-3 flex items-center justify-between hover:bg-white/[0.02]">
       <div class="flex items-center gap-3">
         <input type="checkbox" ${w.enabled?'checked':''} onchange="toggleW(${i})" class="rounded">
         <span class="text-sm font-mono text-white">${w.symbol}</span>
         <select onchange="chgWtf(${i},this.value)" class="text-xs rounded px-2 py-0.5">
-          ${['1m','5m','15m','1h','4h','1d'].map(f=>`<option value="${f}" ${w.timeframe===f?'selected':''}>${f}</option>`).join('')}
-        </select></div>
+          ${['1h','4h'].map(f=>`<option value="${f}" ${w.timeframe===f?'selected':''}>${f}</option>`).join('')}
+        </select>
+        <select onchange="chgWlayer(${i},parseInt(this.value))" class="text-xs rounded px-2 py-0.5">
+          ${[1,2,3,4].map(l=>`<option value="${l}" ${w.layer===l?'selected':''}>${layerNames[l]}</option>`).join('')}
+        </select>
+      </div>
       <button onclick="rmW(${i})" class="text-xs text-red-400 hover:text-red-300">删除</button></div>`).join('');
 
     $('rules-items').innerHTML = rl.map((r,i) => `<div class="px-5 py-3 flex items-center justify-between hover:bg-white/[0.02]">
@@ -181,6 +233,7 @@
         <input type="checkbox" ${r.enabled?'checked':''} onchange="toggleR(${i})" class="rounded">
         <span class="text-sm text-white">${r.name}</span>
         <span class="text-xs px-1.5 py-0.5 rounded ${r.type==='technical'?'bg-blue-900/40 text-blue-300':r.type==='funding'?'bg-purple-900/40 text-purple-300':'bg-orange-900/40 text-orange-300'}">${r.type==='technical'?'技术面':r.type==='funding'?'资金面':'价格面'}</span>
+        ${r.layers&&r.layers.length?r.layers.map(l=>`<span class="text-xs layer-badge-${l} px-1 py-0.5 rounded">L${l}</span>`).join(''):''}
       </div></div>`).join('');
 
     const symbols = [...new Set(wl.map(w=>w.symbol))];
@@ -191,8 +244,9 @@
 
   async function toggleW(i){wl[i].enabled=!wl[i].enabled;await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});}
   async function chgWtf(i,v){wl[i].timeframe=v;await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});}
+  async function chgWlayer(i,v){wl[i].layer=v;await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});}
   async function rmW(i){wl.splice(i,1);await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});loadWatchlist();}
-  async function addItem(){const s=prompt('合约交易对 (如 BTC/USDT:USDT):');if(!s)return;const tf=prompt('周期 (15m/1h/4h):','15m')||'15m';wl.push({symbol:s,timeframe:tf,enabled:true});await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});loadWatchlist();}
+  async function addItem(){const s=prompt('合约交易对 (如 BTC/USDT:USDT):');if(!s)return;const tf=prompt('周期 (1h/4h):','4h')||'4h';const l=parseInt(prompt('层级 (1-4):','1'))||1;wl.push({symbol:s,timeframe:tf,layer:l,enabled:true});await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});loadWatchlist();}
   async function toggleR(i){rl[i].enabled=!rl[i].enabled;await api('/api/rules',{method:'PUT',body:JSON.stringify(rl)});}
 
   async function triggerScan(){

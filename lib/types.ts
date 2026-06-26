@@ -1,7 +1,10 @@
+export type Layer = 1 | 2 | 3 | 4;
+
 export interface WatchItem {
   id?: number;
   symbol: string;
   timeframe: string;
+  layer: Layer;
   enabled: boolean;
 }
 
@@ -11,6 +14,8 @@ export interface SignalRule {
   name: string;
   params: Record<string, any>;
   enabled: boolean;
+  /** Which layers this rule applies to (empty = all) */
+  layers?: Layer[];
 }
 
 export type SignalDirection = 'long' | 'short' | 'neutral';
@@ -24,6 +29,7 @@ export interface Signal {
   direction: SignalDirection;
   message: string;
   strength: number; // 1-5
+  layer?: Layer;
   data: Record<string, any>;
   created_at?: string;
 }
@@ -60,15 +66,67 @@ export interface TickerInfo {
 export interface IndicatorResult {
   ema9: number[];
   ema21: number[];
+  ema50: number[];
+  ema200: number[];
   macd: { macd: number[]; signal: number[]; histogram: number[] };
   rsi: number[];
   bb: { upper: number[]; middle: number[]; lower: number[] };
+  atr: number[];
 }
 
 export interface ScanResult {
   symbol: string;
   timeframe: string;
+  layer?: Layer;
   timestamp: number;
   signals: Signal[];
   error?: string;
 }
+
+/** Per-layer strategy config */
+export interface LayerConfig {
+  layer: Layer;
+  label: string;
+  timeframes: string[];      // which timeframes to scan
+  signals: string[];          // which signal IDs to apply
+  trendFilter: boolean;       // apply EMA50/200 trend filter
+  /** For BB signals: if true, auto-switch breakout/reversion based on trend */
+  autoDirection: boolean;
+  candleCount: number;        // how many candles to fetch
+}
+
+/** Default layer configs — matches backtest findings */
+export const LAYER_CONFIGS: Record<Layer, LayerConfig> = {
+  1: {
+    layer: 1, label: '蓝筹主流',
+    timeframes: ['4h'],
+    signals: ['bb_breakout', 'macd_flip'],
+    trendFilter: true,
+    autoDirection: false,
+    candleCount: 300,
+  },
+  2: {
+    layer: 2, label: '中市值混合',
+    timeframes: ['4h', '1h'],
+    signals: ['bb_breakout', 'bb_reversion', 'macd_flip', 'new_high_low'],
+    trendFilter: true,
+    autoDirection: true,
+    candleCount: 300,
+  },
+  3: {
+    layer: 3, label: '高波动反转',
+    timeframes: ['1h'],
+    signals: ['bb_reversion', 'rsi_extreme', 'volume_surge'],
+    trendFilter: true,
+    autoDirection: false,
+    candleCount: 300,
+  },
+  4: {
+    layer: 4, label: '动态热门',
+    timeframes: ['4h', '1h'],
+    signals: ['bb_breakout', 'bb_reversion', 'volume_surge', 'price_volume'],
+    trendFilter: true,
+    autoDirection: true,
+    candleCount: 300,
+  },
+};

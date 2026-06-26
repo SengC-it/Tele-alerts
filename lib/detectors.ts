@@ -1,5 +1,5 @@
-import type { IndicatorResult, CandleData, FundingRateInfo, TickerInfo, Signal } from './types';
-import { last, secondLast } from './indicators';
+import type { IndicatorResult, CandleData, FundingRateInfo, TickerInfo, Signal, Layer } from './types';
+import { last, secondLast, isUpTrend } from './indicators';
 
 // ========== 技术面信号 ==========
 
@@ -119,6 +119,124 @@ export function detectBBBreakout(
   return null;
 }
 
+/**
+ * BB Reversion — opposite logic to BB Breakout.
+ * When price touches upper band → expect reversion down (short).
+ * When price touches lower band → expect reversion up (long).
+ * Key finding: this works on down-trending / high-volatility coins (L3, L4),
+ * while BB breakout works on up-trending coins (L1).
+ */
+export function detectBBReversion(
+  symbol: string, timeframe: string, candles: CandleData[], indicators: IndicatorResult
+): Signal | null {
+  const upper = last(indicators.bb.upper);
+  const lower = last(indicators.bb.lower);
+  const closeNow = candles[candles.length - 1]?.close;
+  if (upper === undefined || lower === undefined || closeNow === undefined) return null;
+
+  if (closeNow > upper) {
+    return {
+      id: `bb_reversion_${symbol}_${Date.now()}`,
+      type: 'technical', symbol, timeframe,
+      name: '布林带超买回归', direction: 'short',
+      message: `${symbol} 价格触及上轨后大概率回归，看空信号`,
+      strength: 4, data: { close: closeNow, upper, lower },
+    };
+  }
+  if (closeNow < lower) {
+    return {
+      id: `bb_reversion_${symbol}_${Date.now()}`,
+      type: 'technical', symbol, timeframe,
+      name: '布林带超卖回归', direction: 'long',
+      message: `${symbol} 价格触及下轨后大概率反弹，看多信号`,
+      strength: 4, data: { close: closeNow, upper, lower },
+    };
+  }
+  return null;
+}
+
+/**
+ * Volume Surge — current volume > 3x 20-period average + price direction.
+ * Large volume confirms the move direction.
+ */
+export function detectVolumeSurge(
+  symbol: string, timeframe: string, candles: CandleData[]
+): Signal | null {
+  const len = candles.length;
+  if (len < 22) return null;
+
+  const volumes = candles.map((c) => c.volume);
+  const avgVol = volumes.slice(len - 21, len - 1).reduce((a, b) => a + b, 0) / 20;
+  const curVol = volumes[len - 1];
+
+  if (avgVol <= 0 || curVol < avgVol * 3) return null;
+
+  const curClose = candles[len - 1].close;
+  const prevClose = candles[len - 2].close;
+
+  if (curClose > prevClose) {
+    return {
+      id: `volume_surge_${symbol}_${Date.now()}`,
+      type: 'technical', symbol, timeframe,
+      name: '放量上涨', direction: 'long',
+      message: `${symbol} 成交量达均量${(curVol / avgVol).toFixed(1)}倍，量增价涨`,
+      strength: 4, data: { volume: curVol, avgVolume: avgVol, ratio: curVol / avgVol },
+    };
+  }
+  if (curClose < prevClose) {
+    return {
+      id: `volume_surge_${symbol}_${Date.now()}`,
+      type: 'technical', symbol, timeframe,
+      name: '放量下跌', direction: 'short',
+      message: `${symbol} 成交量达均量${(curVol / avgVol).toFixed(1)}倍，量增价跌`,
+      strength: 4, data: { volume: curVol, avgVolume: avgVol, ratio: curVol / avgVol },
+    };
+  }
+  return null;
+}
+
+/**
+ * Price-Volume Resonance — volume > 2x avg + 24-bar price breakout.
+ * Combines volume and price breakout for higher-confidence signals.
+ */
+export function detectPriceVolume(
+  symbol: string, timeframe: string, candles: CandleData[]
+): Signal | null {
+  const len = candles.length;
+  if (len < 26) return null;
+
+  const volumes = candles.map((c) => c.volume);
+  const avgVol = volumes.slice(len - 21, len - 1).reduce((a, b) => a + b, 0) / 20;
+  const curVol = volumes[len - 1];
+
+  if (avgVol <= 0 || curVol < avgVol * 2) return null;
+
+  const prev24 = candles.slice(len - 25, len - 1);
+  const maxHigh = Math.max(...prev24.map((c) => c.high));
+  const minLow = Math.min(...prev24.map((c) => c.low));
+  const curClose = candles[len - 1].close;
+
+  if (curClose > maxHigh) {
+    return {
+      id: `price_volume_${symbol}_${Date.now()}`,
+      type: 'technical', symbol, timeframe,
+      name: '量价共振突破', direction: 'long',
+      message: `${symbol} 放量突破24周期高点，量价共振看多`,
+      strength: 5, data: { close: curClose, breakout: maxHigh, volumeRatio: curVol / avgVol },
+    };
+  }
+  if (curClose < minLow) {
+    return {
+      id: `price_volume_${symbol}_${Date.now()}`,
+      type: 'technical', symbol, timeframe,
+      name: '量价共振破位', direction: 'short',
+      message: `${symbol} 放量跌破24周期低点，量价共振看空`,
+      strength: 5, data: { close: curClose, breakout: minLow, volumeRatio: curVol / avgVol },
+    };
+  }
+  return null;
+}
+
 // ========== 资金面信号 ==========
 
 export function detectFundingRateAnomaly(
@@ -192,4 +310,41 @@ export function detectNewHighLow(
     };
   }
   return null;
+}
+
+// ========== Trend Filter & Auto-Direction ==========
+
+/**
+ * Apply trend filter: suppress long signals in downtrend, short signals in uptrend.
+ * Returns the signal if it passes, null if filtered out.
+ */
+export function applyTrendFilter(
+  signal: Signal | null, indicators: IndicatorResult
+): Signal | null {
+  if (!signal) return null;
+  const up = isUpTrend(indicators);
+  // In uptrend: allow long, suppress short
+  // In downtrend: allow short, suppress long
+  if (up && signal.direction === 'short') return null;
+  if (!up && signal.direction === 'long') return null;
+  return signal;
+}
+
+/**
+ * Auto-direction switch for BB signals.
+ * In uptrend: use BB breakout (breakout = follow trend)
+ * In downtrend: use BB reversion (breakout = fake, expect reversion)
+ * Returns the appropriate signal based on current trend.
+ */
+export function detectBBWithAutoDirection(
+  symbol: string, timeframe: string, candles: CandleData[], indicators: IndicatorResult
+): Signal | null {
+  const up = isUpTrend(indicators);
+  if (up) {
+    // Uptrend: use breakout (follow the trend)
+    return detectBBBreakout(symbol, timeframe, candles, indicators);
+  } else {
+    // Downtrend: use reversion (breakout = fake, mean-revert)
+    return detectBBReversion(symbol, timeframe, candles, indicators);
+  }
 }
