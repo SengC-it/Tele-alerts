@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tele-Alerts 合约盯盘</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body{font-family:'Inter',system-ui,sans-serif;background:#0a0a1a}
+    .glass{background:rgba(255,255,255,0.04);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08)}
+    .glass-hover:hover{background:rgba(255,255,255,0.08)}
+    .signal-long{border-left:3px solid #00c853}
+    .signal-short{border-left:3px solid #ff1744}
+    .signal-neutral{border-left:3px solid #ffd600}
+    ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:3px}
+    .tab-active{border-bottom:2px solid #e94560;color:#fff;cursor:pointer}
+    .tab-inactive{border-bottom:2px solid transparent;color:#666;cursor:pointer}
+    .tab-inactive:hover{color:#999}
+    select,input{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#fff}
+    select:focus,input:focus{outline:none;border-color:#e94560}
+    .btn-primary{background:linear-gradient(135deg,#e94560,#c23152)}
+    .btn-primary:hover{background:linear-gradient(135deg,#ff5a75,#e94560)}
+    .btn-danger{background:rgba(255,23,68,0.15);color:#ff1744}.btn-danger:hover{background:rgba(255,23,68,0.25)}
+    .live-dot{width:8px;height:8px;border-radius:50%;background:#00c853;animation:blink 2s ease-in-out infinite}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+    .fade-in{animation:fadeIn .3s ease-in}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  </style>
+</head>
+<body class="text-gray-200 min-h-screen">
+  <header class="glass border-b border-white/5 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-pink-600 flex items-center justify-center text-white font-bold text-sm">T</div>
+        <h1 class="text-lg font-semibold text-white">Tele-Alerts</h1>
+        <span id="liveBadge" class="hidden items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-green-900/30 text-green-400">
+          <span class="live-dot"></span>LIVE
+        </span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="lastScan" class="text-xs text-gray-500"></span>
+        <button onclick="triggerScan()" id="scanBtn" class="btn-primary text-white text-sm px-4 py-1.5 rounded-lg font-medium">立即扫描</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="max-w-7xl mx-auto px-4 mt-4 flex gap-6 border-b border-white/5">
+    <button class="tab-active pb-3 text-sm font-medium" data-tab="dashboard" onclick="switchTab('dashboard')">信号仪表盘</button>
+    <button class="tab-inactive pb-3 text-sm font-medium" data-tab="history" onclick="switchTab('history')">信号历史</button>
+    <button class="tab-inactive pb-3 text-sm font-medium" data-tab="watchlist" onclick="switchTab('watchlist')">监控配置</button>
+  </div>
+
+  <main class="max-w-7xl mx-auto px-4 py-6">
+    <div id="tab-dashboard">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="glass rounded-xl p-4"><div class="text-gray-500 text-xs mb-1">总信号</div><div id="s-total" class="text-2xl font-bold text-white">-</div></div>
+        <div class="glass rounded-xl p-4"><div class="text-gray-500 text-xs mb-1">24h信号</div><div id="s-24h" class="text-2xl font-bold text-white">-</div></div>
+        <div class="glass rounded-xl p-4"><div class="text-gray-500 text-xs mb-1">做多</div><div id="s-long" class="text-2xl font-bold text-green-400">-</div></div>
+        <div class="glass rounded-xl p-4"><div class="text-gray-500 text-xs mb-1">做空</div><div id="s-short" class="text-2xl font-bold text-red-400">-</div></div>
+      </div>
+      <div class="glass rounded-xl">
+        <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+          <h2 class="text-sm font-semibold text-white">最新信号</h2>
+          <span class="text-xs text-gray-600">由 GitHub Actions 每5分钟自动扫描</span>
+        </div>
+        <div id="latest-signals" class="divide-y divide-white/5 max-h-[500px] overflow-y-auto">
+          <div class="px-5 py-12 text-center text-gray-600 text-sm">等待信号...</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-history" class="hidden">
+      <div class="glass rounded-xl">
+        <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+          <h2 class="text-sm font-semibold text-white">信号历史</h2>
+          <div class="flex gap-2">
+            <select id="f-type" onchange="loadHistory()" class="text-xs rounded px-2 py-1">
+              <option value="">全部类型</option><option value="technical">技术面</option>
+              <option value="funding">资金面</option><option value="price">价格面</option>
+            </select>
+            <select id="f-symbol" onchange="loadHistory()" class="text-xs rounded px-2 py-1">
+              <option value="">全部标的</option>
+            </select>
+          </div>
+        </div>
+        <div id="history-list" class="divide-y divide-white/5 max-h-[600px] overflow-y-auto">
+          <div class="px-5 py-12 text-center text-gray-600 text-sm">暂无历史</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-watchlist" class="hidden">
+      <div class="glass rounded-xl">
+        <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+          <h2 class="text-sm font-semibold text-white">监控标的</h2>
+          <button onclick="addItem()" class="text-xs btn-primary px-3 py-1 rounded-lg text-white">+ 添加</button>
+        </div>
+        <div id="wl-items" class="divide-y divide-white/5"></div>
+      </div>
+      <div class="glass rounded-xl mt-4">
+        <div class="px-5 py-3 border-b border-white/5"><h2 class="text-sm font-semibold text-white">信号规则</h2></div>
+        <div id="rules-items" class="divide-y divide-white/5"></div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+  const $ = id => document.getElementById(id);
+  async function api(path, opts = {}) {
+    const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    if (!r.ok) throw new Error(`API ${r.status}`);
+    return r.json();
+  }
+
+  function switchTab(t) {
+    document.querySelectorAll('[data-tab]').forEach(e => {
+      e.className = (e.dataset.tab === t ? 'tab-active' : 'tab-inactive') + ' pb-3 text-sm font-medium';
+    });
+    ['dashboard','history','watchlist'].forEach(n => $(('tab-'+n)).classList.toggle('hidden', n !== t));
+    if (t === 'history') loadHistory();
+    if (t === 'watchlist') loadWatchlist();
+  }
+
+  function sigHTML(s) {
+    const dc = s.direction==='long'?'signal-long':s.direction==='short'?'signal-short':'signal-neutral';
+    const di = s.direction==='long'?'🟢':s.direction==='short'?'🔴':'⚪';
+    const dl = s.direction==='long'?'做多':s.direction==='short'?'做空':'中性';
+    const tl = s.type==='technical'?'技术面':s.type==='funding'?'资金面':'价格面';
+    const st = '★'.repeat(s.strength)+'☆'.repeat(5-s.strength);
+    const tm = new Date(s.created_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'});
+    return `<div class="px-5 py-3 ${dc} fade-in hover:bg-white/[0.02] transition-colors">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2"><span class="text-lg">${di}</span>
+          <div><div class="text-sm font-medium text-white">${s.name}</div>
+            <div class="text-xs text-gray-500">${s.symbol} · ${s.timeframe} · ${tl}</div></div></div>
+        <div class="text-right">
+          <div class="text-sm font-medium ${s.direction==='long'?'text-green-400':s.direction==='short'?'text-red-400':'text-yellow-400'}">${dl}</div>
+          <div class="text-xs text-yellow-500">${st}</div></div>
+      </div>
+      <div class="mt-1 text-xs text-gray-400">${s.message}</div>
+      <div class="mt-1 text-xs text-gray-600">${tm}</div></div>`;
+  }
+
+  async function loadDashboard() {
+    try {
+      const stats = await api('/api/signals?stats=true');
+      $('s-total').textContent = stats.total;
+      $('s-24h').textContent = stats.last24h;
+      $('s-long').textContent = stats.byDirection?.long || 0;
+      $('s-short').textContent = stats.byDirection?.short || 0;
+      const sigs = await api('/api/signals?limit=20');
+      const c = $('latest-signals');
+      c.innerHTML = sigs.length ? sigs.map(sigHTML).join('') : '<div class="px-5 py-12 text-center text-gray-600 text-sm">暂无信号</div>';
+      if (sigs.length) { $('liveBadge').classList.remove('hidden'); $('liveBadge').classList.add('flex'); }
+    } catch(e) { console.error(e); }
+  }
+
+  async function loadHistory() {
+    try {
+      const t = $('f-type').value, s = $('f-symbol').value;
+      let url = '/api/signals?limit=200';
+      if (t) url += '&type='+t; if (s) url += '&symbol='+encodeURIComponent(s);
+      const sigs = await api(url);
+      $('history-list').innerHTML = sigs.length ? sigs.map(sigHTML).join('') : '<div class="px-5 py-12 text-center text-gray-600 text-sm">暂无</div>';
+    } catch(e) { console.error(e); }
+  }
+
+  let wl = [], rl = [];
+  async function loadWatchlist() {
+    [wl, rl] = await Promise.all([api('/api/watchlist'), api('/api/rules')]);
+    $('wl-items').innerHTML = wl.map((w,i) => `<div class="px-5 py-3 flex items-center justify-between hover:bg-white/[0.02]">
+      <div class="flex items-center gap-3">
+        <input type="checkbox" ${w.enabled?'checked':''} onchange="toggleW(${i})" class="rounded">
+        <span class="text-sm font-mono text-white">${w.symbol}</span>
+        <select onchange="chgWtf(${i},this.value)" class="text-xs rounded px-2 py-0.5">
+          ${['1m','5m','15m','1h','4h','1d'].map(f=>`<option value="${f}" ${w.timeframe===f?'selected':''}>${f}</option>`).join('')}
+        </select></div>
+      <button onclick="rmW(${i})" class="text-xs text-red-400 hover:text-red-300">删除</button></div>`).join('');
+
+    $('rules-items').innerHTML = rl.map((r,i) => `<div class="px-5 py-3 flex items-center justify-between hover:bg-white/[0.02]">
+      <div class="flex items-center gap-3">
+        <input type="checkbox" ${r.enabled?'checked':''} onchange="toggleR(${i})" class="rounded">
+        <span class="text-sm text-white">${r.name}</span>
+        <span class="text-xs px-1.5 py-0.5 rounded ${r.type==='technical'?'bg-blue-900/40 text-blue-300':r.type==='funding'?'bg-purple-900/40 text-purple-300':'bg-orange-900/40 text-orange-300'}">${r.type==='technical'?'技术面':r.type==='funding'?'资金面':'价格面'}</span>
+      </div></div>`).join('');
+
+    const symbols = [...new Set(wl.map(w=>w.symbol))];
+    const fs = $('f-symbol');
+    const cv = fs.value;
+    fs.innerHTML = '<option value="">全部标的</option>' + symbols.map(s=>`<option value="${s}" ${s===cv?'selected':''}>${s}</option>`).join('');
+  }
+
+  async function toggleW(i){wl[i].enabled=!wl[i].enabled;await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});}
+  async function chgWtf(i,v){wl[i].timeframe=v;await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});}
+  async function rmW(i){wl.splice(i,1);await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});loadWatchlist();}
+  async function addItem(){const s=prompt('合约交易对 (如 BTC/USDT:USDT):');if(!s)return;const tf=prompt('周期 (15m/1h/4h):','15m')||'15m';wl.push({symbol:s,timeframe:tf,enabled:true});await api('/api/watchlist',{method:'PUT',body:JSON.stringify(wl)});loadWatchlist();}
+  async function toggleR(i){rl[i].enabled=!rl[i].enabled;await api('/api/rules',{method:'PUT',body:JSON.stringify(rl)});}
+
+  async function triggerScan(){
+    const btn=$('scanBtn');btn.textContent='扫描中...';btn.disabled=true;
+    try{const r=await api('/api/scan',{method:'POST'});$('lastScan').textContent='上次:' + new Date().toLocaleTimeString('zh-CN');loadDashboard();}
+    catch(e){alert('扫描失败: '+e.message);}
+    finally{btn.textContent='立即扫描';btn.disabled=false;}
+  }
+
+  document.addEventListener('DOMContentLoaded',()=>{loadDashboard();setInterval(loadDashboard,30000);});
+  </script>
+</body>
+</html>

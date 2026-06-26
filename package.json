@@ -1,0 +1,23 @@
+{
+  "name": "tele-alerts",
+  "version": "2.0.0",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "tsc --noEmit",
+    "scan": "ts-node scripts/scan.ts"
+  },
+  "keywords": ["crypto", "trading", "alerts", "monitoring"],
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
+    "ccxt": "^4.5.58",
+    "nodemailer": "^9.0.1",
+    "technicalindicators": "^3.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "@types/nodemailer": "^8.0.1",
+    "@vercel/node": "^5.8.21",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,174 @@
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import type { WatchItem, SignalRule, Signal } from './types';
+
+const supabaseUrl = process.env.SUPABASE_URL!;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY!;
+
+let client: SupabaseClient | null = null;
+
+export function getSupabase(): SupabaseClient {
+  if (!client) {
+    client = createClient(supabaseUrl, supabaseKey);
+  }
+  return client;
+}
+
+// ========== Watchlist ==========
+
+export async function getWatchlist(): Promise<WatchItem[]> {
+  const { data, error } = await getSupabase()
+    .from('watchlist')
+    .select('*')
+    .order('id');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getEnabledWatchlist(): Promise<WatchItem[]> {
+  const { data, error } = await getSupabase()
+    .from('watchlist')
+    .select('*')
+    .eq('enabled', true)
+    .order('id');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function upsertWatchlist(items: WatchItem[]): Promise<void> {
+  const sb = getSupabase();
+  // 清空旧数据再插入
+  await sb.from('watchlist').delete().neq('id', 0);
+  if (items.length > 0) {
+    const { error } = await sb.from('watchlist').insert(
+      items.map(({ symbol, timeframe, enabled }) => ({ symbol, timeframe, enabled }))
+    );
+    if (error) throw error;
+  }
+}
+
+// ========== Signal Rules ==========
+
+export async function getSignalRules(): Promise<SignalRule[]> {
+  const { data, error } = await getSupabase()
+    .from('signal_rules')
+    .select('*')
+    .order('id');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getEnabledRules(): Promise<SignalRule[]> {
+  const { data, error } = await getSupabase()
+    .from('signal_rules')
+    .select('*')
+    .eq('enabled', true)
+    .order('id');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function updateSignalRules(rules: SignalRule[]): Promise<void> {
+  const sb = getSupabase();
+  await sb.from('signal_rules').delete().neq('id', '');
+  if (rules.length > 0) {
+    const { error } = await sb.from('signal_rules').insert(rules);
+    if (error) throw error;
+  }
+}
+
+// ========== Signals ==========
+
+export async function addSignal(signal: Signal): Promise<boolean> {
+  const sb = getSupabase();
+  const cooldownKey = `${signal.symbol}_${signal.type}_${signal.name}`;
+  const cooldownMs = 15 * 60 * 1000; // 15 分钟冷却
+
+  // 检查冷却
+  const { data: cooldown } = await sb
+    .from('signal_cooldown')
+    .select('last_triggered')
+    .eq('key', cooldownKey)
+    .single();
+
+  if (cooldown) {
+    const elapsed = Date.now() - new Date(cooldown.last_triggered).getTime();
+    if (elapsed < cooldownMs) return false; // 冷却中
+  }
+
+  // 写入信号
+  const { error: insertErr } = await sb.from('signals').insert({
+    ...signal,
+    created_at: new Date().toISOString(),
+  });
+  if (insertErr) throw insertErr;
+
+  // 更新冷却
+  await sb
+    .from('signal_cooldown')
+    .upsert({ key: cooldownKey, last_triggered: new Date().toISOString() }, { onConflict: 'key' });
+
+  return true;
+}
+
+export async function getSignals(opts?: {
+  type?: string;
+  symbol?: string;
+  since?: number;
+  limit?: number;
+}): Promise<Signal[]> {
+  let query = getSupabase()
+    .from('signals')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (opts?.type) query = query.eq('type', opts.type);
+  if (opts?.symbol) query = query.eq('symbol', opts.symbol);
+  if (opts?.since) query = query.gte('created_at', new Date(opts.since).toISOString());
+  if (opts?.limit) query = query.limit(opts.limit);
+  else query = query.limit(100);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getSignalStats(): Promise<{
+  total: number;
+  byType: Record<string, number>;
+  byDirection: Record<string, number>;
+  last24h: number;
+}> {
+  const sb = getSupabase();
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  const [allRes, dayRes] = await Promise.all([
+    sb.from('signals').select('type, direction'),
+    sb.from('signals').select('id', { count: 'exact', head: true }).gte('created_at', dayAgo),
+  ]);
+
+  const rows = allRes.data || [];
+  const byType: Record<string, number> = {};
+  const byDirection: Record<string, number> = {};
+
+  for (const r of rows) {
+    byType[r.type] = (byType[r.type] || 0) + 1;
+    byDirection[r.direction] = (byDirection[r.direction] || 0) + 1;
+  }
+
+  return {
+    total: rows.length,
+    byType,
+    byDirection,
+    last24h: dayRes.count || 0,
+  };
+}
+
+// ========== 清理旧数据 ==========
+
+export async function cleanupOldSignals(daysToKeep: number = 30): Promise<void> {
+  const cutoff = new Date(Date.now() - daysToKeep * 24 * 60 * 60 * 1000).toISOString();
+  const sb = getSupabase();
+
+  await sb.from('signals').delete().lt('created_at', cutoff);
+  await sb.from('signal_cooldown').delete().lt('last_triggered', cutoff);
+}

@@ -1,0 +1,34 @@
+name: Crypto Signal Scanner
+
+on:
+  # 定时执行：每 5 分钟一次
+  schedule:
+    - cron: '*/5 * * * *'
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Trigger Scan
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.SCAN_URL }}")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          
+          echo "HTTP Status: $HTTP_CODE"
+          echo "Response: $BODY"
+          
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "Scan failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+          
+          echo "Scan completed successfully"
