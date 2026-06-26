@@ -217,8 +217,8 @@ export async function scanSymbolLayered(
       const resolvedSignals = resolveConflicts(rawSignals);
       result.signals = resolvedSignals;
 
-      // Store + notify
-      for (const signal of validSignals) {
+      // Store + notify (use resolved signals, not raw)
+      for (const signal of resolvedSignals) {
         const added = await addSignal(signal);
         if (added) {
           const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
