@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { scanAll } from '../lib/scanner';
+import { sendSignalSummaryEmail } from '../lib/notify';
 import { cleanupOldSignals } from '../lib/supabase';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -20,21 +21,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const results = await scanAll();
 
-    // 清理 30 天前的旧数据（顺带执行，不阻塞响应）
-    cleanupOldSignals(30).catch(() => {});
-
     const sigCount = results.reduce((s, r) => s + r.signals.length, 0);
     const errCount = results.filter((r) => r.error).length;
 
-    return res.status(200).json({
+    // Send HTTP response FIRST (so Vercel doesn't timeout the client)
+    res.status(200).json({
       ok: true,
       scanned: results.length,
       signals: sigCount,
       errors: errCount,
       results,
     });
+
+    // Now send email and cleanup in the background (Vercel grace period ~5s)
+    const allSignals = results.flatMap(r => r.signals);
+    if (allSignals.length > 0) {
+      sendSignalSummaryEmail(allSignals).then(() => {
+        console.log('[Scan] 汇总邮件已发送');
+      }).catch((err: any) => {
+        console.error('[Scan] 汇总邮件发送失败:', err.message);
+      });
+    }
+
+    // 清理 30 天前的旧数据
+    cleanupOldSignals(30).catch(() => {});
   } catch (err: any) {
     console.error('[API /scan] Error:', err);
-    return res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message });
+    }
   }
 }

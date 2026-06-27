@@ -327,15 +327,5 @@ export async function scanAll(): Promise<ScanResult[]> {
   const errCount = allResults.filter((r) => r.error).length;
   console.log(`[Scan] 完成: ${items.length}标的 ${allResults.length}次扫描 ${sigCount}信号 ${errCount}错误 ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
 
-  // Send ONE aggregated email for all signals from this scan
-  const allSignals = allResults.flatMap(r => r.signals);
-  if (allSignals.length > 0) {
-    try {
-      await sendSignalSummaryEmail(allSignals);
-    } catch (err: any) {
-      console.error('[Scan] 汇总邮件发送失败:', err.message);
-    }
-  }
-
   return allResults;
 }
