@@ -9,7 +9,6 @@ import {
   detectFundingRateAnomaly, detectPriceChange, detectNewHighLow,
   applyTrendFilter, detectBBWithAutoDirection,
 } from './detectors';
-import { sendSignalSummaryEmail } from './notify';
 
 let marketsLoaded = false;
 
@@ -175,15 +174,150 @@ export async function scanSymbolLayered(
     marketsLoaded = true;
   }
 
-  // Fetch symbol-level data once (funding rate + ticker) — shared across timeframes
-  const extraPromises: Promise<Signal | null>[] = [];
-  for (const rule of rules) {
-    if (rule.id === 'funding_rate') {
-      extraPromises.push(
-        fetchFundingRate(item.symbol)
-          .then((info) => tagReliability(detectFundingRateAnomaly(item.symbol, info, rule.params.threshold)))
-          .catch(() => null)
-      );
+  // Scan all timeframes in parallel — strategy signals only
+  // Info signals (funding, price_change) are handled at scanAll level to avoid duplicates
+  const results = await Promise.all(
+    config.timeframes.map(async (tf) => {
+      const result: ScanResult = {
+        symbol: item.symbol, timeframe: tf, layer: item.layer,
+        timestamp: Date.now(), signals: [],
+      };
+
+      try {
+        const candles = await fetchOHLCV(item.symbol, tf, config.candleCount);
+
+        if (candles.length < 50) {
+          result.error = `K线不足(${candles.length})`;
+          return result;
+        }
+
+        const indicators = calculateIndicators(candles);
+        const closeNow = candles[candles.length - 1]?.close;
+        const atrNow = last(indicators.atr);
+        const candidateSignals: (Signal | null)[] = [];
+
+        for (const sigId of config.signals) {
+          let signal: Signal | null = null;
+
+          if (sigId === 'bb_breakout' && config.autoDirection) {
+            signal = detectBBWithAutoDirection(item.symbol, tf, candles, indicators);
+            signal = tagReliability(signal);
+          } else if (sigId === 'bb_reversion' && config.autoDirection) {
+            continue;
+          } else {
+            signal = runDetector(sigId, item.symbol, tf, candles, indicators, rules);
+          }
+
+          if (signal && config.trendFilter) {
+            signal = applyTrendFilter(signal, indicators);
+          }
+
+          if (signal && closeNow) {
+            signal = calculateLevels(signal, closeNow, atrNow);
+          }
+
+          candidateSignals.push(signal);
+        }
+
+        const rawSignals = candidateSignals.filter((s): s is Signal => s !== null);
+        for (const s of rawSignals) {
+          s.layer = item.layer;
+        }
+
+        const resolvedSignals = resolveConflicts(rawSignals);
+        result.signals = resolvedSignals;
+
+        for (const signal of resolvedSignals) {
+          const added = await addSignal(signal);
+          if (added) {
+            const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
+            console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}`);
+          }
+        }
+      } catch (err: any) {
+        result.error = err.message;
+        console.error(`[Scan] ${item.symbol} ${tf} L${item.layer} 失败:`, err.message);
+      }
+
+      return result;
+    })
+  );
+
+  return results;
+}
+
+  // Scan all timeframes in parallel — info signals handled separately in scanAll
+  const results = await Promise.all(
+    config.timeframes.map(async (tf) => {
+      const result: ScanResult = {
+        symbol: item.symbol, timeframe: tf, layer: item.layer,
+        timestamp: Date.now(), signals: [],
+      };
+
+      try {
+        const candles = await fetchOHLCV(item.symbol, tf, config.candleCount);
+
+        if (candles.length < 50) {
+          result.error = `K线不足(${candles.length})`;
+          return result;
+        }
+
+        const indicators = calculateIndicators(candles);
+        const closeNow = candles[candles.length - 1]?.close;
+        const atrNow = last(indicators.atr);
+        const candidateSignals: (Signal | null)[] = [];
+
+        for (const sigId of config.signals) {
+          let signal: Signal | null = null;
+
+          if (sigId === 'bb_breakout' && config.autoDirection) {
+            signal = detectBBWithAutoDirection(item.symbol, tf, candles, indicators);
+            signal = tagReliability(signal);
+          } else if (sigId === 'bb_reversion' && config.autoDirection) {
+            continue;
+          } else {
+            signal = runDetector(sigId, item.symbol, tf, candles, indicators, rules);
+          }
+
+          // Apply trend filter if configured
+          if (signal && config.trendFilter) {
+            signal = applyTrendFilter(signal, indicators);
+          }
+
+          // Calculate entry/SL/TP for strategy signals using ATR
+          if (signal && closeNow) {
+            signal = calculateLevels(signal, closeNow, atrNow);
+          }
+
+          candidateSignals.push(signal);
+        }
+
+        // Collect all valid signals
+        const rawSignals = candidateSignals.filter((s): s is Signal => s !== null);
+        for (const s of rawSignals) {
+          s.layer = item.layer;
+        }
+
+        // Resolve direction conflicts
+        const resolvedSignals = resolveConflicts(rawSignals);
+        result.signals = resolvedSignals;
+
+        // Store signals to DB
+        for (const signal of resolvedSignals) {
+          const added = await addSignal(signal);
+          if (added) {
+            const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
+            console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}`);
+          }
+        }
+      } catch (err: any) {
+        result.error = err.message;
+        console.error(`[Scan] ${item.symbol} ${tf} L${item.layer} 失败:`, err.message);
+      }
+
+      return result;
+    })
+  );
     }
     if (rule.id === 'price_change') {
       extraPromises.push(
@@ -197,6 +331,7 @@ export async function scanSymbolLayered(
   const extraResultsPromise = Promise.all(extraPromises);
 
   // Scan all timeframes in parallel
+  const isFirstTf = { value: true }; // Track which TF gets the info signals
   const results = await Promise.all(
     config.timeframes.map(async (tf) => {
       const result: ScanResult = {
@@ -245,8 +380,12 @@ export async function scanSymbolLayered(
           candidateSignals.push(signal);
         }
 
-        // Add shared extra signals (funding, price_change) — fetched once per symbol
-        candidateSignals.push(...extraResults);
+        // Add shared info signals (funding, price_change) only to the FIRST timeframe
+        // to avoid duplicate DB writes from concurrent timeframes
+        if (isFirstTf.value) {
+          candidateSignals.push(...extraResults);
+          isFirstTf.value = false;
+        }
 
         // Collect all valid signals
         const rawSignals = candidateSignals.filter((s): s is Signal => s !== null);
@@ -301,7 +440,7 @@ export async function scanAll(): Promise<ScanResult[]> {
   console.log(`[Scan] 开始扫描 ${items.length} 个标的 (${layerSummary})...`);
   const startTime = Date.now();
 
-  // Parallel scan with controlled concurrency (5 at a time to stay within Binance rate limits)
+  // Parallel scan with controlled concurrency
   const allResults: ScanResult[] = [];
   const CONCURRENCY = 5;
 
@@ -323,9 +462,68 @@ export async function scanAll(): Promise<ScanResult[]> {
     allResults.push(...batchResults.flat());
   }
 
+  // Collect info signals (funding_rate + price_change) — once per unique symbol
+  const seenSymbols = new Set<string>();
+  const infoSignals: Signal[] = [];
+  for (const item of items) {
+    if (seenSymbols.has(item.symbol)) continue;
+    seenSymbols.add(item.symbol);
+
+    const infoPromises: Promise<Signal | null>[] = [];
+    for (const rule of rules) {
+      if (rule.id === 'funding_rate') {
+        infoPromises.push(
+          fetchFundingRate(item.symbol)
+            .then((info) => tagReliability(detectFundingRateAnomaly(item.symbol, info, rule.params.threshold)))
+            .catch(() => null)
+        );
+      }
+      if (rule.id === 'price_change') {
+        infoPromises.push(
+          fetchTicker(item.symbol)
+            .then((ticker) => tagReliability(detectPriceChange(item.symbol, ticker, rule.params.changePercent)))
+            .catch(() => null)
+        );
+      }
+    }
+    const infoResults = await Promise.all(infoPromises);
+    for (const sig of infoResults) {
+      if (sig) {
+        sig.layer = item.layer;
+        infoSignals.push(sig);
+      }
+    }
+  }
+
+  // Write info signals to DB
+  for (const sig of infoSignals) {
+    const added = await addSignal(sig);
+    if (added) {
+      const layerLabel = LAYER_CONFIGS[sig.layer || 1]?.label || `L${sig.layer}`;
+      console.log(`[InfoSignal] ${layerLabel} ${sig.direction.toUpperCase()} ${sig.name}: ${sig.symbol}`);
+    }
+  }
+
+  // Merge info signals into results (attach to first result of each symbol)
+  if (infoSignals.length > 0) {
+    const sigBySymbol = new Map<string, Signal[]>();
+    for (const sig of infoSignals) {
+      const arr = sigBySymbol.get(sig.symbol) || [];
+      arr.push(sig);
+      sigBySymbol.set(sig.symbol, arr);
+    }
+    for (const r of allResults) {
+      const syms = sigBySymbol.get(r.symbol);
+      if (syms && syms.length > 0) {
+        r.signals = [...syms, ...r.signals];
+        sigBySymbol.delete(r.symbol); // Only add to first result per symbol
+      }
+    }
+  }
+
   const sigCount = allResults.reduce((s, r) => s + r.signals.length, 0);
   const errCount = allResults.filter((r) => r.error).length;
-  console.log(`[Scan] 完成: ${items.length}标的 ${allResults.length}次扫描 ${sigCount}信号 ${errCount}错误 ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+  console.log(`[Scan] 完成: ${items.length}标的 ${allResults.length}次扫描 ${sigCount}信号 (${infoSignals.length}info) ${errCount}错误 ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
 
   return allResults;
 }
