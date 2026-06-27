@@ -72,3 +72,27 @@ export function isUpTrend(indicators: IndicatorResult): boolean {
   if (ema50Val === undefined || ema200Val === undefined) return false;
   return ema50Val > ema200Val;
 }
+
+/**
+ * Calculate volume SMA (simple moving average) over the given period.
+ * Uses the previous `period` candles (excluding the current/latest one)
+ * to compare current volume against the average.
+ */
+export function calcVolumeSMA(candles: CandleData[], period: number = 20): number {
+  if (candles.length < period + 1) return 0;
+  const volumes = candles.slice(-period - 1, -1).map(c => c.volume);
+  return volumes.reduce((a, b) => a + b, 0) / period;
+}
+
+/**
+ * Calculate N-bar change percentage.
+ * Compares current close to the close `lookback` bars ago.
+ * Returns percentage change (e.g. +2.5 for +2.5%).
+ */
+export function calcNBarChange(candles: CandleData[], lookback: number = 8): number {
+  if (candles.length < lookback + 1) return 0;
+  const current = candles[candles.length - 1].close;
+  const past = candles[candles.length - 1 - lookback].close;
+  if (past === 0) return 0;
+  return ((current - past) / past) * 100;
+}

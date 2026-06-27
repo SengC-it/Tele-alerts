@@ -1,4 +1,4 @@
-import type { ScanResult, Signal, SignalRule, WatchItem, Layer, LayerConfig, SignalDirection, SignalLevels } from './types';
+import type { ScanResult, Signal, SignalRule, WatchItem, Layer, LayerConfig, SignalDirection, SignalLevels, VolumeConfirmResult, BTCStrengthResult } from './types';
 import { LAYER_CONFIGS, INFO_SIGNAL_IDS } from './types';
 import { getEnabledWatchlist, getEnabledRules, addSignal } from './supabase';
 import { fetchOHLCV, fetchFundingRate, fetchTicker, loadMarkets } from './exchange';
@@ -8,9 +8,15 @@ import {
   detectBBReversion, detectVolumeSurge, detectPriceVolume,
   detectFundingRateAnomaly, detectPriceChange, detectNewHighLow,
   applyTrendFilter, detectBBWithAutoDirection,
+  detectVolumeConfirm, detectBTCStrength,
 } from './detectors';
 
 let marketsLoaded = false;
+
+/** BTC candle cache — fetched once per scan, shared across all symbols */
+export interface BTCCache {
+  [timeframe: string]: any[]; // CandleData[] keyed by timeframe ('4h', '1h', etc.)
+}
 
 /**
  * Calculate entry/SL/TP levels for a strategy signal using ATR.
@@ -162,9 +168,57 @@ function runDetector(
   return tagReliability(signal);
 }
 
+/**
+ * Apply volume confirmation and BTC relative strength filters to a strategy signal.
+ * These are quality boosters, not hard filters — they boost/suppress signal strength.
+ *
+ * Backtest findings:
+ * - BTC absolute advantage >= 1%: avgPnl 4.3x improvement, only ~10% trade reduction
+ * - Volume >= 2x: strength +1 boost
+ * - Design: boost strength instead of hard-filtering to avoid losing too many trades
+ */
+function applyVolumeAndBTCStrength(
+  signal: Signal,
+  config: LayerConfig,
+  candles: any[],
+  btcCandles: any[] | undefined
+): void {
+  if (signal.reliability !== 'strategy') return;
+  if (signal.direction !== 'long' && signal.direction !== 'short') return;
+
+  // Volume confirmation boost
+  if (config.volumeBoost) {
+    const volResult = detectVolumeConfirm(candles, 20, config.volumeThreshold);
+    signal.data.volumeConfirm = volResult.confirmed;
+    signal.data.volRatio = Math.round(volResult.volRatio * 10) / 10;
+    if (volResult.confirmed) {
+      signal.strength = Math.min(5, signal.strength + 1);
+      signal.message += ` [放量${volResult.volRatio.toFixed(1)}x]`;
+    }
+  }
+
+  // BTC relative strength boost
+  if (config.btcStrengthFilter && btcCandles && btcCandles.length >= 9) {
+    const strength = detectBTCStrength(candles, btcCandles, 8);
+    signal.data.btcStrength = strength;
+
+    // Check if coin outperforms BTC in the SAME direction as the signal
+    const isLong = signal.direction === 'long';
+    const coinOutperforms = isLong
+      ? strength.advantage >= config.btcStrengthThreshold * 100  // threshold is e.g. 0.01, need 1%
+      : strength.advantage <= -(config.btcStrengthThreshold * 100);
+
+    if (coinOutperforms) {
+      signal.strength = Math.min(5, signal.strength + 1);
+      const dir = isLong ? '强于' : '弱于';
+      signal.message += ` [${dir}BTC ${Math.abs(strength.advantage).toFixed(1)}%]`;
+    }
+  }
+}
+
 /** Scan one symbol across its layer's timeframes (parallel within symbol) */
 export async function scanSymbolLayered(
-  item: WatchItem, rules: SignalRule[]
+  item: WatchItem, rules: SignalRule[], btcCache: BTCCache = {}
 ): Promise<ScanResult[]> {
   const config = getLayerConfig(item.layer);
 
@@ -216,6 +270,11 @@ export async function scanSymbolLayered(
             signal = calculateLevels(signal, closeNow, atrNow);
           }
 
+          // Apply volume confirmation + BTC relative strength boosters
+          if (signal) {
+            applyVolumeAndBTCStrength(signal, config, candles, btcCache[tf]);
+          }
+
           candidateSignals.push(signal);
         }
 
@@ -231,178 +290,7 @@ export async function scanSymbolLayered(
           const added = await addSignal(signal);
           if (added) {
             const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
-            console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}`);
-          }
-        }
-      } catch (err: any) {
-        result.error = err.message;
-        console.error(`[Scan] ${item.symbol} ${tf} L${item.layer} 失败:`, err.message);
-      }
-
-      return result;
-    })
-  );
-
-  return results;
-}
-
-  // Scan all timeframes in parallel — info signals handled separately in scanAll
-  const results = await Promise.all(
-    config.timeframes.map(async (tf) => {
-      const result: ScanResult = {
-        symbol: item.symbol, timeframe: tf, layer: item.layer,
-        timestamp: Date.now(), signals: [],
-      };
-
-      try {
-        const candles = await fetchOHLCV(item.symbol, tf, config.candleCount);
-
-        if (candles.length < 50) {
-          result.error = `K线不足(${candles.length})`;
-          return result;
-        }
-
-        const indicators = calculateIndicators(candles);
-        const closeNow = candles[candles.length - 1]?.close;
-        const atrNow = last(indicators.atr);
-        const candidateSignals: (Signal | null)[] = [];
-
-        for (const sigId of config.signals) {
-          let signal: Signal | null = null;
-
-          if (sigId === 'bb_breakout' && config.autoDirection) {
-            signal = detectBBWithAutoDirection(item.symbol, tf, candles, indicators);
-            signal = tagReliability(signal);
-          } else if (sigId === 'bb_reversion' && config.autoDirection) {
-            continue;
-          } else {
-            signal = runDetector(sigId, item.symbol, tf, candles, indicators, rules);
-          }
-
-          // Apply trend filter if configured
-          if (signal && config.trendFilter) {
-            signal = applyTrendFilter(signal, indicators);
-          }
-
-          // Calculate entry/SL/TP for strategy signals using ATR
-          if (signal && closeNow) {
-            signal = calculateLevels(signal, closeNow, atrNow);
-          }
-
-          candidateSignals.push(signal);
-        }
-
-        // Collect all valid signals
-        const rawSignals = candidateSignals.filter((s): s is Signal => s !== null);
-        for (const s of rawSignals) {
-          s.layer = item.layer;
-        }
-
-        // Resolve direction conflicts
-        const resolvedSignals = resolveConflicts(rawSignals);
-        result.signals = resolvedSignals;
-
-        // Store signals to DB
-        for (const signal of resolvedSignals) {
-          const added = await addSignal(signal);
-          if (added) {
-            const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
-            console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}`);
-          }
-        }
-      } catch (err: any) {
-        result.error = err.message;
-        console.error(`[Scan] ${item.symbol} ${tf} L${item.layer} 失败:`, err.message);
-      }
-
-      return result;
-    })
-  );
-    }
-    if (rule.id === 'price_change') {
-      extraPromises.push(
-        fetchTicker(item.symbol)
-          .then((ticker) => tagReliability(detectPriceChange(item.symbol, ticker, rule.params.changePercent)))
-          .catch(() => null)
-      );
-    }
-  }
-  // Start fetching early, results shared across all timeframes
-  const extraResultsPromise = Promise.all(extraPromises);
-
-  // Scan all timeframes in parallel
-  const isFirstTf = { value: true }; // Track which TF gets the info signals
-  const results = await Promise.all(
-    config.timeframes.map(async (tf) => {
-      const result: ScanResult = {
-        symbol: item.symbol, timeframe: tf, layer: item.layer,
-        timestamp: Date.now(), signals: [],
-      };
-
-      try {
-        const [candles, extraResults] = await Promise.all([
-          fetchOHLCV(item.symbol, tf, config.candleCount),
-          extraResultsPromise,
-        ]);
-
-        if (candles.length < 50) {
-          result.error = `K线不足(${candles.length})`;
-          return result;
-        }
-
-        const indicators = calculateIndicators(candles);
-        const closeNow = candles[candles.length - 1]?.close;
-        const atrNow = last(indicators.atr);
-        const candidateSignals: (Signal | null)[] = [];
-
-        for (const sigId of config.signals) {
-          let signal: Signal | null = null;
-
-          if (sigId === 'bb_breakout' && config.autoDirection) {
-            signal = detectBBWithAutoDirection(item.symbol, tf, candles, indicators);
-            signal = tagReliability(signal);
-          } else if (sigId === 'bb_reversion' && config.autoDirection) {
-            continue;
-          } else {
-            signal = runDetector(sigId, item.symbol, tf, candles, indicators, rules);
-          }
-
-          // Apply trend filter if configured
-          if (signal && config.trendFilter) {
-            signal = applyTrendFilter(signal, indicators);
-          }
-
-          // Calculate entry/SL/TP for strategy signals using ATR
-          if (signal && closeNow) {
-            signal = calculateLevels(signal, closeNow, atrNow);
-          }
-
-          candidateSignals.push(signal);
-        }
-
-        // Add shared info signals (funding, price_change) only to the FIRST timeframe
-        // to avoid duplicate DB writes from concurrent timeframes
-        if (isFirstTf.value) {
-          candidateSignals.push(...extraResults);
-          isFirstTf.value = false;
-        }
-
-        // Collect all valid signals
-        const rawSignals = candidateSignals.filter((s): s is Signal => s !== null);
-        for (const s of rawSignals) {
-          s.layer = item.layer;
-        }
-
-        // Resolve direction conflicts
-        const resolvedSignals = resolveConflicts(rawSignals);
-        result.signals = resolvedSignals;
-
-        // Store signals to DB
-        for (const signal of resolvedSignals) {
-          const added = await addSignal(signal);
-          if (added) {
-            const layerLabel = LAYER_CONFIGS[item.layer]?.label || `L${item.layer}`;
-            console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}`);
+            console.log(`[Signal] L${item.layer}(${layerLabel}) ${signal.direction.toUpperCase()} ${signal.name}: ${signal.symbol} ${tf}${signal.levels ? ` Entry=${signal.levels.entry} SL=${signal.levels.stopLoss} TP=${signal.levels.takeProfit}` : ''}${signal.data.volumeConfirm ? ' VOL' : ''}${signal.data.btcStrength ? ' BTC-RS' : ''}`);
           }
         }
       } catch (err: any) {
@@ -440,6 +328,38 @@ export async function scanAll(): Promise<ScanResult[]> {
   console.log(`[Scan] 开始扫描 ${items.length} 个标的 (${layerSummary})...`);
   const startTime = Date.now();
 
+  // Pre-fetch BTC candles for all timeframes that need BTC strength filter
+  // This is done once per scan instead of per-symbol, saving ~19 API calls
+  const btcCache: BTCCache = {};
+  const btCNeeded = new Set<string>();
+  for (const item of items) {
+    const config = getLayerConfig(item.layer);
+    if (config.btcStrengthFilter) {
+      for (const tf of config.timeframes) {
+        btCNeeded.add(tf);
+      }
+    }
+  }
+  if (btCNeeded.size > 0) {
+    try {
+      await loadMarkets();
+      marketsLoaded = true;
+      const btcPromises = [...btCNeeded].map(async (tf) => {
+        const candles = await fetchOHLCV('BTC/USDT:USDT', tf, 300);
+        return { tf, candles };
+      });
+      const btcResults = await Promise.all(btcPromises);
+      for (const { tf, candles } of btcResults) {
+        if (candles.length >= 9) {
+          btcCache[tf] = candles;
+        }
+      }
+      console.log(`[Scan] BTC缓存已加载: ${Object.keys(btcCache).join(', ')}`);
+    } catch (err: any) {
+      console.warn(`[Scan] BTC缓存加载失败(继续扫描): ${err.message}`);
+    }
+  }
+
   // Parallel scan with controlled concurrency
   const allResults: ScanResult[] = [];
   const CONCURRENCY = 5;
@@ -447,7 +367,7 @@ export async function scanAll(): Promise<ScanResult[]> {
   for (let i = 0; i < items.length; i += CONCURRENCY) {
     const batch = items.slice(i, i + CONCURRENCY);
     const batchResults = await Promise.all(
-      batch.map(item => scanSymbolLayered(item, rules).catch((err) => {
+      batch.map(item => scanSymbolLayered(item, rules, btcCache).catch((err) => {
         console.error(`[Scan] ${item.symbol} L${item.layer} 失败:`, err.message);
         return [{
           symbol: item.symbol,

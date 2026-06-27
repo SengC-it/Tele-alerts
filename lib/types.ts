@@ -39,6 +39,15 @@ export interface SignalLevels {
   riskReward: number;
 }
 
+/** BTC relative strength comparison result */
+export interface BTCStrengthResult {
+  coinChange: number;    // coin's N-bar change %
+  btcChange: number;     // BTC's N-bar change % over same period
+  advantage: number;     // coinChange - btcChange (absolute advantage)
+  ratio: number;         // coinChange / btcChange (0 if BTC change = 0)
+  lookback: number;      // number of bars used
+}
+
 export interface Signal {
   id: string;
   type: 'technical' | 'funding' | 'price';
@@ -108,6 +117,12 @@ export interface ScanResult {
   error?: string;
 }
 
+/** Volume confirmation result */
+export interface VolumeConfirmResult {
+  confirmed: boolean;    // whether volume >= threshold × average
+  volRatio: number;      // current volume / average volume
+}
+
 /** Per-layer strategy config */
 export interface LayerConfig {
   layer: Layer;
@@ -118,9 +133,17 @@ export interface LayerConfig {
   /** For BB signals: if true, auto-switch breakout/reversion based on trend */
   autoDirection: boolean;
   candleCount: number;        // how many candles to fetch
+  /** BTC relative strength filter: boost/suppress signals based on coin vs BTC performance */
+  btcStrengthFilter: boolean;
+  /** Minimum absolute outperformance vs BTC (0.01 = 1%) to boost strength */
+  btcStrengthThreshold: number;
+  /** Volume confirmation: boost strength if current volume >= threshold × average */
+  volumeBoost: boolean;
+  /** Minimum volume ratio for boost (default 2.0) */
+  volumeThreshold: number;
 }
 
-/** Default layer configs — matches backtest findings (v2: expanded from 30-coin backtest) */
+/** Default layer configs — matches backtest findings (v3: BTC strength + volume boost) */
 export const LAYER_CONFIGS: Record<Layer, LayerConfig> = {
   1: {
     layer: 1, label: '蓝筹主流',
@@ -129,6 +152,8 @@ export const LAYER_CONFIGS: Record<Layer, LayerConfig> = {
     trendFilter: true,
     autoDirection: false,
     candleCount: 300,
+    btcStrengthFilter: true, btcStrengthThreshold: 0.01,
+    volumeBoost: true, volumeThreshold: 2.0,
   },
   2: {
     layer: 2, label: '中盘突破',
@@ -137,6 +162,8 @@ export const LAYER_CONFIGS: Record<Layer, LayerConfig> = {
     trendFilter: true,
     autoDirection: false,
     candleCount: 300,
+    btcStrengthFilter: true, btcStrengthThreshold: 0.01,
+    volumeBoost: true, volumeThreshold: 2.0,
   },
   3: {
     layer: 3, label: '高波动策略',
@@ -145,6 +172,8 @@ export const LAYER_CONFIGS: Record<Layer, LayerConfig> = {
     trendFilter: true,
     autoDirection: false,
     candleCount: 300,
+    btcStrengthFilter: true, btcStrengthThreshold: 0.01,
+    volumeBoost: true, volumeThreshold: 2.0,
   },
   4: {
     layer: 4, label: '弹性新币',
@@ -153,5 +182,7 @@ export const LAYER_CONFIGS: Record<Layer, LayerConfig> = {
     trendFilter: true,
     autoDirection: true,
     candleCount: 300,
+    btcStrengthFilter: true, btcStrengthThreshold: 0.01,
+    volumeBoost: true, volumeThreshold: 2.0,
   },
 };
