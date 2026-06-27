@@ -330,9 +330,11 @@ export async function scanAll(): Promise<ScanResult[]> {
   // Send ONE aggregated email for all signals from this scan
   const allSignals = allResults.flatMap(r => r.signals);
   if (allSignals.length > 0) {
-    sendSignalSummaryEmail(allSignals).catch((err) => {
+    try {
+      await sendSignalSummaryEmail(allSignals);
+    } catch (err: any) {
       console.error('[Scan] 汇总邮件发送失败:', err.message);
-    });
+    }
   }
 
   return allResults;
